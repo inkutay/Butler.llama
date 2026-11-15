@@ -4,9 +4,7 @@
 
 Load a model when a client asks for it, release conflicting chat models from the same GPUs, and expose a single API endpoint. Manage chat, embeddings and reranking instances from a dark web interface in **English, Russian or Simplified Chinese**.
 
-![Illustrated overview of the Butler interface](docs/preview.svg)
-
-*Illustrated interface overview with fictional data; not a performance benchmark.*
+![Butler](image/butler_logo.svg)
 
 **Interface screenshots (v1.0.1):**
 
@@ -109,13 +107,13 @@ node scripts/test_names.js
 python scripts/test_setup.py
 ```
 
-Node.js is required for JavaScript checks. Historical local comparison/deployment scripts and private operational notes are deliberately excluded from Git.
+Node.js is required for JavaScript checks.
 
 ## Local configuration and Git
 
 `butler_config.example.json` and `butler_instances.example.json` show the local data format. `scripts/setup.py` is the preferred way to initialize a fresh checkout; never overwrite an existing deployment's real JSON files with the examples.
 
-The repository uses an explicit file allowlist. Real credentials, model weights, backups, archived code, generated `static/`, operational scripts and private Markdown documents remain local. A Git repository is version history, not an off-disk backup.
+The repository uses an explicit file allowlist. A Git repository is version history, not an off-disk backup.
 
 ## Credits
 
@@ -127,7 +125,7 @@ Butler управляет локальными моделями llama.cpp чер
 
 ## 简体中文
 
-Butler 通过 Docker 管理本地 llama.cpp 模型，界面支持俄语、英语和简体中文。首次运行请执行 Quick start 中的命令：`scripts/setup.py` 会提示设置密码、生成密钥并准备 `static/`。真实配置、模型权重和私人运维记录不会加入 Git。ON 模式按请求加载模型，OFF 模式仅使用已运行的模型。
+Butler 通过 Docker 管理本地 llama.cpp 模型，界面支持俄语、英语和简体中文。首次运行请执行 Quick start 中的命令：`scripts/setup.py` 会提示设置密码、生成密钥并准备 `static/`。ON 模式按请求加载模型，OFF 模式仅使用已运行的模型。
 
 ## License
 
