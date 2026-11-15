@@ -29,6 +29,9 @@
 /image/*
 !/image/hf_logo.png
 !/image/brain_2.svg
+!/image/Butler_llama_01.png
+!/image/Butler_llama_02.png
+!/image/Butler_llama_03.png
 !/docs/
 /docs/*
 !/docs/preview.svg
