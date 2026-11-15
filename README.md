@@ -8,6 +8,14 @@ Load a model when a client asks for it, release conflicting chat models from the
 
 *Illustrated interface overview with fictional data; not a performance benchmark.*
 
+**Interface screenshots (v1.0.1):**
+
+![Screenshot 1](image/Butler_llama_01.png)
+
+![Screenshot 2](image/Butler_llama_02.png)
+
+![Screenshot 3](image/Butler_llama_03.png)
+
 ## Features
 
 - GGUF model instances backed by llama.cpp Docker containers; CPU or NVIDIA GPU execution.
@@ -115,7 +123,7 @@ Created by **Inkutay / 2026**. Inference is provided by [llama.cpp](https://gith
 
 ## Русский
 
-Butler управляет локальными моделями llama.cpp через Docker. Интерфейс поддерживает RU / EN / 中文. Для первого запуска выполните команды Quick start: скрипт `scripts/setup.py` запросит пароль, создаст ключи и подготовит `static/`. Рабочие настройки, модели и приватные заметки не входят в Git. Режим ON загружает модель по запросу, OFF использует только уже загруженные модели.
+Butler управляет локальными моделями llama.cpp через Docker. Интерфейс поддерживает RU / EN / 中文. Для первого запуска выполните команды Quick start: скрипт `scripts/setup.py` запросит пароль, создаст ключи и подготовит `static/`. Режим ON загружает модель по запросу, OFF использует только уже загруженные модели.
 
 ## 简体中文
 
