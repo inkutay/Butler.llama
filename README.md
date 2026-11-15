@@ -26,7 +26,7 @@ Load a model when a client asks for it, release conflicting chat models from the
 
 ## Requirements
 
-Linux with Python 3.12+ and Docker. NVIDIA execution also needs a compatible driver and NVIDIA Container Toolkit. WSL2 with a Linux Docker daemon is the original development environment; native Linux is also supported by the code. Windows-native operation is not the primary deployment path.
+Linux with Python 3.12+ and Docker. NVIDIA execution also needs a compatible driver and NVIDIA Container Toolkit. Native Linux is the primary deployment target; WSL2 with a Linux Docker daemon is supported for development and testing. Windows-native operation is not the primary deployment path.
 
 Follow the official [Docker installation guide](https://docs.docker.com/engine/install/) and, for NVIDIA GPUs, the [Container Toolkit installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). Verify that the user running Butler can use Docker and that GPU access works before starting models.
 
