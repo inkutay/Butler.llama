@@ -121,6 +121,8 @@ Butler управляет локальными моделями llama.cpp чер
 
 Butler 通过 Docker 管理本地 llama.cpp 模型，界面支持俄语、英语和简体中文。首次运行请执行 Quick start 中的命令：`scripts/setup.py` 会提示设置密码、生成密钥并准备 `static/`。真实配置、模型权重和私人运维记录不会加入 Git。ON 模式按请求加载模型，OFF 模式仅使用已运行的模型。
 
-## License status
+## License
 
-A distribution license has not been selected yet. This local repository is a preparation step; choose a license and review third-party assets before publishing or redistributing it.
+Copyright (C) 2026 Inkutay.
+
+Butler source code is licensed under the [GNU Affero General Public License, version 3 only](LICENSE) (SPDX: AGPL-3.0-only). See [third-party notices](THIRD_PARTY.md) for components and marks outside this grant.
