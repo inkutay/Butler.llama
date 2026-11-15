@@ -1,0 +1,21 @@
+[Unit]
+Description=Butler local model manager
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=butler
+Group=butler
+SupplementaryGroups=docker
+WorkingDirectory=/opt/butler
+Environment=HOST=127.0.0.1
+Environment=PORT=8090
+ExecStart=/opt/butler/.venv/bin/python /opt/butler/butler.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=300
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

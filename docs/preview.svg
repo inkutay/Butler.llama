@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="490" viewBox="0 0 1000 490">
+<rect width="1000" height="490" rx="16" fill="#121319"/>
+<g font-family="Arial,sans-serif"><text x="30" y="50" font-size="29" fill="#a4ef78">Butler</text>
+<text x="715" y="46" font-size="15" fill="#bbb">EN · RU · 中文</text>
+<rect x="30" y="75" width="940" height="55" rx="8" fill="#20212a"/>
+<text x="47" y="108" font-size="15" fill="#b9bfca">GPU0 · Example GPU</text>
+<text x="380" y="108" font-size="15" fill="#86c9ed">VRAM · temperature · power</text>
+<text x="800" y="108" font-size="15" fill="#9fe684">BUTLER ON</text>
+<rect x="30" y="147" width="940" height="51" rx="8" fill="#20212a"/>
+<text x="48" y="178" font-size="15" fill="#ddd">TEST CHAT</text><text x="238" y="178" font-size="15" fill="#86c9ed">Select an instance</text>
+<text x="30" y="232" font-size="14" fill="#9fe684">LLM</text><text x="100" y="232" font-size="14" fill="#bbb">EMBEDDING</text><text x="230" y="232" font-size="14" fill="#bbb">RERANKER</text>
+<text x="795" y="232" font-size="14" fill="#9fe684">ADD INSTANCE</text>
+<rect x="30" y="250" width="940" height="58" rx="8" fill="#252631"/><text x="48" y="275" font-size="17" fill="#a4ef78">Chat model</text><text x="48" y="295" font-size="12" fill="#adb5c7">CTX · GPU selection · LoRA · MTP</text><text x="895" y="284" font-size="15" fill="#9fe684">ON</text><rect x="30" y="320" width="940" height="58" rx="8" fill="#252631"/><text x="48" y="345" font-size="17" fill="#a4ef78">Embedding model</text><text x="48" y="365" font-size="12" fill="#adb5c7">On-demand loading · idle exemption</text><text x="895" y="354" font-size="15" fill="#9fe684">OFF</text><rect x="30" y="390" width="940" height="58" rx="8" fill="#252631"/><text x="48" y="415" font-size="17" fill="#a4ef78">Reranking model</text><text x="48" y="435" font-size="12" fill="#adb5c7">Shared API · permission controls</text><text x="895" y="424" font-size="15" fill="#9fe684">OFF</text><text x="825" y="475" font-size="13" fill="#8991a2">Inkutay /2026</text></g></svg>
