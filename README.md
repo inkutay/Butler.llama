@@ -21,7 +21,7 @@ Load a model when a client asks for it, release conflicting chat models from the
 - On-demand model loading, GPU conflict handling for chat models, optional idle unloading and per-instance idle exemptions.
 - GPU memory, temperature and power monitoring; generation speed and slot indicators for chat instances.
 - Model download from Hugging Face, a file manager, runtime image selection, LoRA and MTP options.
-- Context-size autodetection and optional KV-memory calibration.
+- Context-size autodetection, KV-memory calibration, and pre-launch VRAM budget estimation from GGUF metadata (MoE and hybrid architectures supported) — prevents OOM on 16–24 GB rigs.
 - UI login, API keys, permission marks and RU / EN / 中文 interface switching.
 
 ## Requirements
@@ -112,8 +112,6 @@ Node.js is required for JavaScript checks.
 ## Local configuration and Git
 
 `butler_config.example.json` and `butler_instances.example.json` show the local data format. `scripts/setup.py` is the preferred way to initialize a fresh checkout; never overwrite an existing deployment's real JSON files with the examples.
-
-The repository uses an explicit file allowlist. A Git repository is version history, not an off-disk backup.
 
 ## Credits
 
