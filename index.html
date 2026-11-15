@@ -610,14 +610,17 @@ if(!model)return;
 const nglGpu=parseInt(card.querySelector('input.inst-ngl')?.value)||0;
 const nglCpu=parseInt(card.querySelector('.inst-ngl-cpu')?.textContent)||0;
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
-const ctx=parseInt(card.querySelector('.inst-ctx')?.value)||16384;
+const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
 const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
 const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 const numGpus=_cardGpuCount(card);
 const vramGb=_cardVramGb(card);
 apiPost('/api/calculate',{model,mmproj:card.querySelector('.inst-mmproj')?.value||'',mtp:card.querySelector('.inst-mtp')?.value||'',dir:(INSTANCES.find(i=>i.id===id)?.models_dir)||'',free_vram_gb:vramGb,ngl:nglGpu,flash_attn:flash,ram_kv:ram,kvq,num_gpus:numGpus,parallel:parallel}).then(d=>{
-if(!d||!d.params)return;const p=d.params;const el=document.getElementById('stats_'+id);if(el){let h='Size: <span class="val-white">'+(p.size_gb||'?')+' GB</span>';if(p.context_length)h+=' | Max cb: <span class="yell">'+p.context_length.toLocaleString()+'</span>';h+=' | Layers: <span class="val-white">'+p.n_layers+'</span>';if(p.n_embd)h+=' | n_embd: <span class="val-white">'+p.n_embd+'</span>';if(p.n_embd_kv)h+=' | n_embd_kv: <span class="val-white">'+p.n_embd_kv+'</span>';if(p.n_kv_heads)h+=' | n_kv_heads: <span class="val-white">'+p.n_kv_heads+'</span>';h+='<br>';if(p.mla)h+='MLA: key_len: <span class="val-white">'+p.key_length+'</span> val_len: <span class="val-white">'+p.value_length+'</span>';if(p.n_expert>0){if(p.mla)h+=' | ';h+='MoE: experts <span class="val-white">'+p.n_expert+'</span> active: <span class="val-white">'+p.n_expert_used+'</span>';}h+='<br>KV/token FP16: <span class="val-white">'+d.kv_per_token.fp16+' MiB</span> | Q8_0: <span class="val-white">'+d.kv_per_token.q8_0+' MiB</span> | Q4_0: <span class="val-white">'+d.kv_per_token.q4_0+' MiB</span> | Selected KV/token: <span class="val-white">'+d.kvpt_selected+' MiB</span>';el.innerHTML=h;}
+if(!card.isConnected||!d||!d.params)return;const p=d.params;
+const cpuLayers=card.querySelector('.inst-ngl-cpu');
+if(cpuLayers)cpuLayers.textContent=Math.max(0,(p.n_layers||0)-Number(card.querySelector('.inst-ngl')?.value||0));
+const el=document.getElementById('stats_'+id);if(el){let h='Size: <span class="val-white">'+(p.size_gb||'?')+' GB</span>';if(p.context_length)h+=' | Max cb: <span class="yell">'+p.context_length.toLocaleString()+'</span>';h+=' | Layers: <span class="val-white">'+p.n_layers+'</span>';if(p.n_embd)h+=' | n_embd: <span class="val-white">'+p.n_embd+'</span>';if(p.n_embd_kv)h+=' | n_embd_kv: <span class="val-white">'+p.n_embd_kv+'</span>';if(p.n_kv_heads)h+=' | n_kv_heads: <span class="val-white">'+p.n_kv_heads+'</span>';h+='<br>';if(p.mla)h+='MLA: key_len: <span class="val-white">'+p.key_length+'</span> val_len: <span class="val-white">'+p.value_length+'</span>';if(p.n_expert>0){if(p.mla)h+=' | ';h+='MoE: experts <span class="val-white">'+p.n_expert+'</span> active: <span class="val-white">'+p.n_expert_used+'</span>';}h+='<br>KV/token FP16: <span class="val-white">'+d.kv_per_token.fp16+' MiB</span> | Q8_0: <span class="val-white">'+d.kv_per_token.q8_0+' MiB</span> | Q4_0: <span class="val-white">'+d.kv_per_token.q4_0+' MiB</span> | Selected KV/token: <span class="val-white">'+d.kvpt_selected+' MiB</span>';el.innerHTML=h;}
 const footerEl=card.querySelector('.inst-footer-stats .yell');if(footerEl&&d.recommended_cap!=null){const P=d.parallel||parallel;const slotHit=(d.model_max_ctx>0&&d.recommended_slot>=d.model_max_ctx);const slotTxt=slotHit?('Max cb: '+fmtK(d.model_max_ctx)):fmtK(d.recommended_slot);footerEl.textContent='~ '+fmtK(d.recommended_ctx)+' ( '+P+' x '+slotTxt+' ) - [max ctx vram/ram '+fmtK(d.recommended_cap)+']';}
 // VRAM / RAM usage — считаем по CTX из поля (+ mmproj, если выбран)
 const ctxUser=parseInt(card.querySelector('.inst-ctx')?.value)||0;
@@ -646,31 +649,57 @@ if(ramEl)ramEl.textContent=ramModel.toFixed(1)+' GB';
 }}
 }).catch(()=>{});}
 
-function saveParams(id){
-const card=document.querySelector(`.instance-card[data-inst="${id}"]`);if(!card)return;
-const ms=card.querySelector('.inst-model'),model=ms?ms.value:'';
-const ngl=parseInt(card.querySelector('.inst-ngl')?.value)||99;
-const ctx=parseInt(card.querySelector('.inst-ctx')?.value)||16384;
-const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
-const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
-const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
-const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
-const mmproj=card.querySelector('.inst-mmproj')?.value||'';
-const mtp=card.querySelector('.inst-mtp')?.value||'';
-const mtp_nmax=parseInt(card.querySelector('.inst-mtpnmax')?.value)||0;
-const runtime=card.querySelector('.inst-runtime')?.value||'';
-apiPost('/api/instances/'+id+'/params',{model,ngl,ctx,flash,ram,kvq,parallel,mmproj,mtp,mtp_nmax,docker_image:runtime}).catch(()=>{});
-const ctxVal=card.querySelector('.inst-ctx-val');if(ctxVal)ctxVal.textContent=Math.round(ctx/Math.max(1,parallel));
-recalcCard(card);}
+const pendingCardSaves = new Map();
+const cardNumberDefaults = {ngl:99, ctx:16384, parallel:1, mtp_nmax:0};
 
-function syncNgl(card){
-const ngls=card.querySelectorAll('input.inst-ngl, span.inst-ngl-cpu');if(ngls.length<2)return;
-let gpu=parseInt(ngls[0].value)||0;
-if(gpu>99)gpu=99;if(gpu<0)gpu=0;
-ngls[0].value=gpu;ngls[0].setAttribute('data-saved',gpu);
-const nl=parseInt(ngls[0].dataset.nlayers)||0;
-const cpuEl=card.querySelector('span.inst-ngl-cpu');if(cpuEl)cpuEl.textContent=nl>0?Math.max(0,nl-gpu):0;
-saveParams(card.getAttribute('data-inst'));}
+function saveParams(id, control){
+    const field = control.dataset.param;
+    const checkbox = control.type === 'checkbox';
+    const readValue = element => checkbox ? element.checked : element.value;
+    const input = readValue(control);
+    const previous = pendingCardSaves.get(id) || Promise.resolve();
+    const save = previous.then(async () => {
+        const instance = INSTANCES.find(item => item.id === id);
+        let value = input;
+        try {
+            if (Object.hasOwn(cardNumberDefaults, field)) {
+                const minimum = field === 'parallel' ? 1 : 0;
+                if (!/^[0-9]+$/.test(input.trim()) || !Number.isSafeInteger(Number(input)) || Number(input) < minimum) {
+                    throw new Error(field.toUpperCase() + ': enter an integer ≥ ' + minimum);
+                }
+                value = Number(input);
+            } else if (field === 'kvq') {
+                value = input.toLowerCase();
+            }
+            const result = await apiPost('/api/instances/' + encodeURIComponent(id) + '/params', {[field]:value});
+            if (result.success !== true) throw new Error(result.message || 'save failed');
+            const latest = INSTANCES.find(item => item.id === id);
+            if (latest) latest[field] = value;
+        } catch (error) {
+            toast(error.message || 'save failed', true);
+            if (control.isConnected && readValue(control) === input) {
+                const confirmed = INSTANCES.find(item => item.id === id) || instance;
+                const saved = confirmed?.[field] ?? cardNumberDefaults[field] ?? (checkbox ? false : '');
+                if (checkbox) control.checked = saved;
+                else control.value = field === 'kvq' ? String(saved || 'q8_0').toUpperCase() : saved;
+            }
+        }
+        if (!control.isConnected) return;
+        const card = control.closest('.instance-card');
+        const ctx = Number(card.querySelector('.inst-ctx')?.value ?? 16384);
+        const parallel = Number(card.querySelector('.inst-parallel')?.value ?? 1);
+        const header = card.querySelector('.inst-ctx-val');
+        if (header) header.textContent = Math.round(ctx / Math.max(1, parallel));
+        if (field === 'model' && !control.value) {
+            document.getElementById('stats_' + id)?.replaceChildren();
+        }
+        recalcCard(card);
+    });
+    pendingCardSaves.set(id, save);
+    const clear = () => { if (pendingCardSaves.get(id) === save) pendingCardSaves.delete(id); };
+    save.then(clear, clear);
+    return save;
+}
 
 function updateTabUI(){document.getElementById('tabLlm').classList.toggle('active',_instTab==='chat');document.getElementById('tabEmb').classList.toggle('active',_instTab==='embed');document.getElementById('tabRerank').classList.toggle('active',_instTab==='rerank');}
 function setInstTab(m){_instTab=m;try{localStorage.setItem('butler_insttab',m);}catch(e){}updateTabUI();renderInstances(_lastMetrics||{});}
@@ -708,8 +737,8 @@ const hw=SYSTEM_GPUS.map(g=>g.idx);
 c.innerHTML=instList.map((inst,idx)=>{
 const act=!!ACTIVE[inst.id],stt=advanceState(inst.id,act,!!inst.model_ready,!!inst.model_failed),su=STATE_UI[stt],canStop=act||(_is[inst.id]&&_is[inst.id].pending),indices=inst.gpu_indices||[],allReal=indices.filter(i=>i!=='__select__'),canAdd=allReal.length<hw.length;let _pows=0,_powsf=false;allReal.forEach(_ix=>{const _g=SYSTEM_GPUS.find(g=>g.idx===_ix);const _m=_g&&metrics?metrics[_g.uuid]:null;if(_m&&_m.power!=null){_pows+=_m.power;_powsf=true;}});
 const tglLbl=su.lbl,tglBg=su.bg,sLbl=canStop?'STOP':'START',sBg=(stt==='failed')?'#FF0000':(canStop?'#647864':'#009600');
-const realGpuRows=indices.filter(idx=>idx!=='__select__').map(idx=>{const gpu=SYSTEM_GPUS.find(g=>g.idx===idx);const gm=gpu&&metrics?metrics[gpu.uuid]:null;const mem=gm&&gm.vram_used?gm.vram_used:'-- / -- MiB';const temp=gm&&gm.temp!=null?gm.temp+'C':'--C';const uuid=shortUuid(gpu?gpu.uuid:null);const name=gpu?gpu.name:'No video card';return `<div class="inst-gpu-row" data-gpu="${idx}"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">${idx}</span><span class="gpu-name">${name}</span></div><select class="native-select-hidden" onchange="changeGpu('${inst.id}','${idx}',this.value)"><option value="">— select —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(hi!==idx&&allReal.includes(hi))return '';return `<option value="${hi}" ${hi===idx?'selected':''}>${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">${mem}</span><span class="inst-gpu-temp ${gm&&gm.temp!=null?tempCls(gm.temp):''}">${temp}</span><span class="inst-gpu-uuid">${uuid}</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
-const placeholderRows=indices.filter(idx=>idx==='__select__').map(idx=>{return `<div class="inst-gpu-row" data-gpu="__select__"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">--</span><span class="gpu-name" style="color:var(--text-yellow);font-style:italic">select video card</span></div><select class="native-select-hidden" onchange="addSelectedGpu('${inst.id}',this.value)"><option value="">— select video card —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(allReal.includes(hi))return '';return `<option value="${hi}">${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">0 / 0 MiB</span><span class="inst-gpu-temp">0C</span><span class="inst-gpu-uuid">no video card</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
+const realGpuRows=indices.filter(idx=>idx!=='__select__').map(idx=>{const gpu=SYSTEM_GPUS.find(g=>g.idx===idx);const gm=gpu&&metrics?metrics[gpu.uuid]:null;const mem=gm&&gm.vram_used?gm.vram_used:'-- / -- MiB';const temp=gm&&gm.temp!=null?gm.temp+'C':'--C';const uuid=shortUuid(gpu?gpu.uuid:null);const name=gpu?gpu.name:'No video card';return `<div class="inst-gpu-row" data-gpu="${idx}"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">${idx}</span><span class="gpu-name">${name}</span></div><select class="native-select-hidden" onchange="changeGpu('${inst.id}','${idx}',this)"><option value="">— select —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(hi!==idx&&allReal.includes(hi))return '';return `<option value="${hi}" ${hi===idx?'selected':''}>${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">${mem}</span><span class="inst-gpu-temp ${gm&&gm.temp!=null?tempCls(gm.temp):''}">${temp}</span><span class="inst-gpu-uuid">${uuid}</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
+const placeholderRows=indices.filter(idx=>idx==='__select__').map(idx=>{return `<div class="inst-gpu-row" data-gpu="__select__"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">--</span><span class="gpu-name" style="color:var(--text-yellow);font-style:italic">select video card</span></div><select class="native-select-hidden" onchange="changeGpu('${inst.id}','__select__',this)"><option value="">— select video card —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(allReal.includes(hi))return '';return `<option value="${hi}">${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">0 / 0 MiB</span><span class="inst-gpu-temp">0C</span><span class="inst-gpu-uuid">no video card</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
 const gpuRows=realGpuRows+placeholderRows;
 const dm=inst.models_dir?(_dirModels[inst.models_dir]||null):null;
 const isChat=(inst.mode||'chat')==='chat';
@@ -726,7 +755,7 @@ return `<section class="instance-card" data-inst="${inst.id}">
 <span class="label-gray">PORT:</span>
 <input type="text" class="instance-input inst-port input-yellow-text" value="${inst.port}" onblur="changePort('${inst.id}',this.value)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
 <div class="inst-meta-block">
-<div class="inst-meta-line"><span class="inst-ctx-label" title="контекст на слот (всего ${inst.ctx||16384}, слотов ${inst.parallel||1})">CTX:</span><span class="inst-ctx-val">${Math.round((inst.ctx||16384)/Math.max(1,inst.parallel||1))}</span><span class="label-gray" style="margin-left:8px">GPU:</span><span class="inst-gpu-val">${allReal.join(', ')||'—'}</span></div>
+<div class="inst-meta-line"><span class="inst-ctx-label" title="контекст на слот (всего ${inst.ctx??16384}, слотов ${inst.parallel||1})">CTX:</span><span class="inst-ctx-val">${Math.round((inst.ctx??16384)/Math.max(1,inst.parallel||1))}</span><span class="label-gray" style="margin-left:8px">GPU:</span><span class="inst-gpu-val">${allReal.join(', ')||'—'}</span></div>
 <div class="inst-meta-line meta-sm" style="gap:4px">${(inst.mode||'chat')==='chat'?`<span class="label-gray" title="среднее арифметическое по всем засчитанным замерам за сессию инстанса">AVG:</span><span class="inst-speed-val" id="spdavg_${inst.id}">${(inst.avg_speed_tps||0)>0?inst.avg_speed_tps:'--'}</span><span class="label-gray" title="минимальная измеренная скорость за сессию инстанса">MIN:</span><span class="inst-speed-val" id="spdmin_${inst.id}">${(inst.min_speed_tps||0)>0?inst.min_speed_tps:'--'}</span><span class="label-gray" title="максимальная измеренная скорость за сессию инстанса">MAX:</span><span class="inst-speed-val" id="spdmax_${inst.id}">${(inst.max_speed_tps||0)>0?inst.max_speed_tps:'--'}</span><span class="label-gray" style="margin-left:6px" title="текущая (live во время запроса, последняя измеренная иначе)">SP:</span><span class="inst-speed-val ${(inst.speed_tps||0)>0&&inst.speed_live?'spd-active':''}" id="speed_${inst.id}" title="${(inst.speed_tps||0)>0?((inst.speed_live)?'live speed':'last measured speed (sticky)'):''}">${(inst.speed_tps||0)>0?(inst.speed_tps+' t/s'):'--'}</span>`:''}<span class="label-gray" style="margin-left:${(inst.mode||'chat')==='chat'?8:0}px" title="Суммарное потребление карт этого инстанса (W). Показывается только когда инстанс ОН">POW:</span><span class="inst-power-val" id="power_${inst.id}">${(act&&_powsf)?Math.round(_pows)+' W':'--'}</span></div>
 </div>
 <div class="inst-header-actions">
@@ -746,30 +775,30 @@ ${gpuRows}
 <span class="label-gray hf-label">MODELS DIR:</span><input class="inst-model-path mdir-input" value="${(inst.models_dir||'').replace(/"/g,'&quot;')}" placeholder="(global)" onchange="saveModelsDir('${inst.id}',this.value)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()" title="Folder with this instance's models (empty = global)"><button class="btn-folder mdir-btn" onclick="event.stopPropagation();openFs('${inst.id}')" title="Browse"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#C8C864"/></svg></button>
 </div>
 <div class="inst-model-row">
-<span class="label-gray hf-label">RUNTIME:</span><select class="inst-model-select inst-runtime" onchange="saveParams('${inst.id}')" onclick="event.stopPropagation()" title="llama.cpp runtime image used to start this instance (empty = standard)">${(RUNTIMES.length?RUNTIMES:[{image:'',label:'llama.cpp (standard)',default:1}]).map(r=>{const val=r.default?'':r.image;return `<option value="${val}" ${val===(inst.docker_image||'')?'selected':''}>${r.label}</option>`;}).join('')}</select>
+<span class="label-gray hf-label">RUNTIME:</span><select class="inst-model-select inst-runtime" data-param="docker_image" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()" title="llama.cpp runtime image used to start this instance (empty = standard)">${(RUNTIMES.length?RUNTIMES:[{image:'',label:'llama.cpp (standard)',default:1}]).map(r=>{const val=r.default?'':r.image;return `<option value="${escapeHtml(val)}" ${val===(inst.docker_image||'')?'selected':''}>${escapeHtml(r.label)}</option>`;}).join('')}</select>
 </div>
 <div class="inst-model-row">
-<span class="label-gray hf-label">MODEL:</span><select class="inst-model-select inst-model" onchange="onModelChange('${inst.id}',this.value)" onclick="event.stopPropagation()"><option value="">— select model —</option>${mList.map(m=>`<option value="${m.name}" ${inst.model===m.name?'selected':''}>${m.name} (${m.size_gb} GB)</option>`).join('')}</select>
+<span class="label-gray hf-label">MODEL:</span><select class="inst-model-select inst-model" data-param="model" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()"><option value="">— select model —</option>${mList.map(m=>`<option value="${escapeHtml(m.name)}" ${inst.model===m.name?'selected':''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`).join('')}</select>
 </div>
 ${isChat?`<div class="inst-model-row">
-<span class="label-gray hf-label">MMPROJ:</span><select class="inst-model-select inst-mmproj" onchange="saveParams('${inst.id}')" onclick="event.stopPropagation()"><option value="">— none (text only) —</option>${mmList.map(m=>`<option value="${m.name}" ${inst.mmproj===m.name?'selected':''}>${m.name} (${m.size_gb} GB)</option>`).join('')}</select>
+<span class="label-gray hf-label">MMPROJ:</span><select class="inst-model-select inst-mmproj" data-param="mmproj" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()"><option value="">— none (text only) —</option>${mmList.map(m=>`<option value="${escapeHtml(m.name)}" ${inst.mmproj===m.name?'selected':''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`).join('')}</select>
 </div>
 <div class="inst-model-row">
-<span class="label-gray hf-label">MTP:</span><select class="inst-model-select inst-mtp" onchange="saveParams('${inst.id}')" onclick="event.stopPropagation()" title="MTP (multi-token prediction) для speculative decoding: built-in = модуль внутри файла модели (только --spec-type draft-mtp); файл = отдельная голова (--spec-draft-model). + --spec-draft-n-max из поля n:"><option value="">— none —</option><option value="builtin" ${inst.mtp==='builtin'?'selected':''}>⚡ built-in (в файле модели)</option>${mtpList.map(m=>`<option value="${m.name}" ${inst.mtp===m.name?'selected':''}>${m.name} (${m.size_gb} GB)</option>`).join('')}</select><span class="label-gray" title="Макс. токенов драфта за шаг (--spec-draft-n-max), 3 = дефолт llama.cpp">n:</span><input type="number" min="1" max="8" class="instance-input inst-mtpnmax" style="width:62px" value="${inst.mtp_nmax||3}" onchange="saveParams('${inst.id}')" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
+<span class="label-gray hf-label">MTP:</span><select class="inst-model-select inst-mtp" data-param="mtp" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()" title="MTP (multi-token prediction) для speculative decoding: built-in = модуль внутри файла модели (только --spec-type draft-mtp); файл = отдельная голова (--spec-draft-model). + --spec-draft-n-max из поля n:"><option value="">— none —</option><option value="builtin" ${inst.mtp==='builtin'?'selected':''}>⚡ built-in (в файле модели)</option>${mtpList.map(m=>`<option value="${escapeHtml(m.name)}" ${inst.mtp===m.name?'selected':''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`).join('')}</select><span class="label-gray" title="Макс. токенов драфта за шаг (--spec-draft-n-max), 3 = дефолт llama.cpp">n:</span><input type="number" min="1" max="8" class="instance-input inst-mtpnmax" style="width:62px" value="${inst.mtp_nmax??3}" data-param="mtp_nmax" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
 </div>`:''}
 ${isChat?`<div class="inst-model-row">
-<span class="label-gray hf-label">LORA:</span><select class="inst-model-select inst-lora-select" onchange="addLoraTo('${inst.id}',this.value)" onclick="event.stopPropagation()"><option value="">— add lora —</option>${lList.filter(l=>!(inst.loras||[]).includes(l.name)).map(l=>`<option value="${l.name}">${l.name} (${l.size_mb} MB)</option>`).join('')}</select>
+<span class="label-gray hf-label">LORA:</span><select class="inst-model-select inst-lora-select" onchange="addLoraTo('${inst.id}',this.value)" onclick="event.stopPropagation()"><option value="">— add lora —</option>${lList.filter(l=>!(inst.loras||[]).includes(l.name)).map(l=>`<option value="${escapeHtml(l.name)}">${escapeHtml(l.name)} (${l.size_mb} MB)</option>`).join('')}</select>
 </div>`:''}
-${isChat?`${(inst.loras||[]).map(l=>{const lOn=inst.active_lora===l;return `<div class="inst-lora-row"><span class="lora-name">${l}</span><button class="btn-inst-toggle" style="background-color:${lOn?'var(--text-yellow)':'#647864'}" onclick="event.stopPropagation();applyLora('${inst.id}','${lOn?'':l}')">${lOn?'ON':'OFF'}</button><button class="btn-gpu-delete" onclick="event.stopPropagation();delLora('${inst.id}','${l}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('')}`:''}
+${isChat?`${(inst.loras||[]).map(l=>{const lOn=inst.active_lora===l;return `<div class="inst-lora-row"><span class="lora-name">${escapeHtml(l)}</span><button class="btn-inst-toggle" style="background-color:${lOn?'var(--text-yellow)':'#647864'}" data-lora="${escapeHtml(lOn?'':l)}" onclick="event.stopPropagation();applyLora('${inst.id}',this.dataset.lora)">${lOn?'ON':'OFF'}</button><button class="btn-gpu-delete" data-lora="${escapeHtml(l)}" onclick="event.stopPropagation();delLora('${inst.id}',this.dataset.lora)" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('')}`:''}
 <div class="inst-stats" id="stats_${inst.id}">Select a model to see its stats</div>
 <div class="inst-config-row">
-<span class="label-gray">NGL GPU:</span><input type="text" class="instance-input inst-ngl" value="${inst.ngl||99}" onchange="syncNgl(this.closest('.instance-card'))" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
+<span class="label-gray">NGL GPU:</span><input type="text" class="instance-input inst-ngl" value="${inst.ngl??99}" data-param="ngl" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
 <span class="label-gray">NGL CPU:</span><span class="instance-input inst-ngl-cpu" style="display:inline-flex;align-items:center;width:65px;background:var(--bg-page);border-radius:10px;color:var(--text-yellow);padding:0 12px;font-size:15px;height:40px;font-family:monospace">${inst.ngl_cpu||0}</span>
-${isChat?`<span class="label-gray">KV:</span><select class="instance-select inst-kv" onchange="saveParams('${inst.id}')" onclick="event.stopPropagation()"><option ${(inst.kvq||'q8_0').toUpperCase()==='FP16'?'selected':''}>FP16</option><option ${(inst.kvq||'q8_0').toUpperCase()==='Q8_0'?'selected':''}>Q8_0</option><option ${(inst.kvq||'q8_0').toUpperCase()==='Q4_0'?'selected':''}>Q4_0</option></select>`:''}
-<span class="label-gray">CTX:</span><input type="text" class="instance-input inst-ctx" value="${inst.ctx||16384}" onchange="saveParams('${inst.id}')" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
-<span class="label-gray">P:</span><input type="text" class="instance-input inst-parallel" value="${inst.parallel||1}" onchange="saveParams('${inst.id}')" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
-<label class="inst-checkbox-group" onclick="event.stopPropagation()">Flash-Att:<input type="checkbox" ${inst.flash?'checked':''} onchange="saveParams('${inst.id}')"><span class="custom-check"></span></label>
-${isChat?`<label class="inst-checkbox-group" title="Вкл = KV-кэш остаётся в системной RAM (--no-kv-offload): контекст ограничен свободной RAM, на GPU только модель. Выкл = KV выгружается на GPU: быстрее, но модель + KV должны влезть в VRAM, иначе инстанс не стартует" onclick="event.stopPropagation()">KV in RAM:<input type="checkbox" ${inst.ram?'checked':''} onchange="saveParams('${inst.id}')"><span class="custom-check"></span></label>`:''}
+${isChat?`<span class="label-gray">KV:</span><select class="instance-select inst-kv" data-param="kvq" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()"><option ${(inst.kvq||'q8_0').toUpperCase()==='FP16'?'selected':''}>FP16</option><option ${(inst.kvq||'q8_0').toUpperCase()==='Q8_0'?'selected':''}>Q8_0</option><option ${(inst.kvq||'q8_0').toUpperCase()==='Q4_0'?'selected':''}>Q4_0</option></select>`:''}
+<span class="label-gray">CTX:</span><input type="text" class="instance-input inst-ctx" value="${inst.ctx??16384}" data-param="ctx" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
+<span class="label-gray">P:</span><input type="text" class="instance-input inst-parallel" value="${inst.parallel||1}" data-param="parallel" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
+<label class="inst-checkbox-group" onclick="event.stopPropagation()">Flash-Att:<input type="checkbox" ${inst.flash?'checked':''} data-param="flash" onchange="saveParams('${inst.id}',this)"><span class="custom-check"></span></label>
+${isChat?`<label class="inst-checkbox-group" title="Вкл = KV-кэш остаётся в системной RAM (--no-kv-offload): контекст ограничен свободной RAM, на GPU только модель. Выкл = KV выгружается на GPU: быстрее, но модель + KV должны влезть в VRAM, иначе инстанс не стартует" onclick="event.stopPropagation()">KV in RAM:<input type="checkbox" ${inst.ram?'checked':''} data-param="ram" onchange="saveParams('${inst.id}',this)"><span class="custom-check"></span></label>`:''}
 </div>
 <div class="inst-footer">
 <div class="inst-footer-stats">VRAM usage: <span class="val-white">--</span> &nbsp;&nbsp; RAM usage: <span class="val-white">--</span>${isChat?`<br><span class="val-label">Recommended max context:</span> <span class="yell">--</span> <button class="btn-calib" onclick="calibKV('${inst.id}',this)" title="Промерить KV/token: грузит модель при двух разных ctx и замеряет разницу VRAM. Результат сохраняется рядом с моделью и уточняет рекомендацию.">Промерить KV</button>`:''}</div>
@@ -781,7 +810,7 @@ if(_expandedId){const ec=document.querySelector(`.instance-card[data-inst="${_ex
 // Expand newly created instance
 if(_lastCreatedName){const newCard=document.querySelector(`.instance-card[data-inst="${_lastCreatedName}"]`);if(newCard){document.querySelectorAll('.instance-card').forEach(c=>c.classList.remove('expanded'));newCard.classList.add('expanded');_expandedId=_lastCreatedName;requestAnimationFrame(()=>scrollCardTop(newCard));}_lastCreatedName='';}
 // Trigger calc for instances with model selected
-INSTANCES.forEach(inst=>{if(inst.model){const sel=document.querySelector(`.instance-card[data-inst="${inst.id}"] .inst-model`);if(sel)onModelChange(inst.id,inst.model);}});
+INSTANCES.forEach(inst=>{if(inst.model){const sel=document.querySelector(`.instance-card[data-inst="${inst.id}"] .inst-model`);if(sel)recalcCard(sel.closest('.instance-card'));}});
 }
 
 async function deleteInst(id){
@@ -817,7 +846,11 @@ inst.allowed=nowAllowed;applyBtn(nowAllowed);refreshChatModels(true);
 try{const r=await apiPatch('/api/instances/'+iid,{allowed:nowAllowed});if(!r.success)throw new Error(r.message||'save failed');toast(nowAllowed?'Разрешена: модель будет передаваться клиенту':'Метка снята: модель не передаётся клиенту');}
 catch(e){inst.allowed=!nowAllowed;applyBtn(!nowAllowed);refreshChatModels(true);toast(e.message||String(e),true);}
 }
-async function changePort(id,p){if(!p.trim())return;try{await apiPatch('/api/instances/'+id+'/port',{port:p.trim()});}catch(e){}}
+async function changePort(id,p){
+if(!p.trim())return;
+try{const result=await apiPatch('/api/instances/'+id+'/port',{port:p.trim()});if(!result.success)throw new Error(result.message);}
+catch(e){toast(e.message,true);_mutate=true;await loadStatus();}
+}
 async function toggleInstOnOff(id){await instStartStop(id);}
 async function instStartStop(id){
 const inst=INSTANCES.find(i=>i.id===id);if(!inst)return;
@@ -834,16 +867,17 @@ _mutate=true;await loadStatus();
 // Write to chat only if chat card is already open
 const chatCard=document.getElementById('chatCard');
 if(chatCard&&chatCard.classList.contains('expanded')){
-document.getElementById('chatOutput').innerHTML+='<div style="color:var(--text-yellow)">> '+t('instanceStopped')+' <b>'+escapeHtml(inst.name)+'</b>.'+(model?' '+t('modelUnloaded')+' <b>'+model.replace(/^.*[/\\]/,'')+'</b>.':'')+'</div>';
+document.getElementById('chatOutput').innerHTML+='<div style="color:var(--text-yellow)">> '+t('instanceStopped')+' <b>'+escapeHtml(inst.name)+'</b>.'+(model?' '+t('modelUnloaded')+' <b>'+escapeHtml(model.replace(/^.*[/\\]/,''))+'</b>.':'')+'</div>';
 document.getElementById('chatOutput').scrollTop=document.getElementById('chatOutput').scrollHeight;}
 }catch(e){toast(e.message,true);}
 return;}
+if(pendingCardSaves.has(id))await pendingCardSaves.get(id);
 const card=document.querySelector(`.instance-card[data-inst="${id}"]`);
+if(!card)return;
 const ms=card.querySelector('.inst-model'),model=ms?ms.value:inst.model;
 if(!model){toast('Select model first',true);return;}
-saveParams(id);
-const ngl=parseInt(card.querySelector('.inst-ngl')?.value)||99;
-const ctx=parseInt(card.querySelector('.inst-ctx')?.value)||16384;
+const ngl=Number(card.querySelector('.inst-ngl')?.value ?? 99);
+const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
 const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
 const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
@@ -860,7 +894,7 @@ selectChatInstance(id);
 _chatHistory=[];
 output.innerHTML='';
 output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('instanceStart')+' <b>'+instName+'</b></div>';
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+modelName+'</b></div>';
+output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>';
 output.scrollTop=output.scrollHeight;
 // Check GPU availability (embed/rerank are small and share the GPU with an LLM — no conflict)
 const gpuIndices=(inst.gpu_indices||[]).filter(i=>i!=='__select__');
@@ -886,7 +920,7 @@ output.scrollTop=output.scrollHeight;
 try{await apiPost('/api/unload',{instance:other.id});}catch(e){}}}
 await loadStatus();
 } else {
-output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusy')+' '+busyGpus.join(', ')+'</div>';
+output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusy')+' '+escapeHtml(busyGpus.join(', '))+'</div>';
 output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusyDesc')+':</div>';
 output.scrollTop=output.scrollHeight;
 let busyNames=[];
@@ -902,7 +936,7 @@ try{
 const r=await apiPost('/api/load',{instance:id,model,ctx_size:ctx,ngl,flash_attn:flash,ram_kv:ram,kvq,parallel});
 if(!r||!r.success){
 _is[id]&&(_is[id].pending=false);
-output.innerHTML+='<div style="color:var(--text-danger)">'+t('loadError')+': '+(r&&r.message||'')+'</div>';
+output.innerHTML+='<div style="color:var(--text-danger)">'+t('loadError')+': '+escapeHtml(r&&r.message||'')+'</div>';
 output.scrollTop=output.scrollHeight;return;}
 // Poll readiness
 const progressDiv=document.createElement('div');
@@ -919,7 +953,7 @@ const chk=await(await fetch('/api/check/'+id)).json();
 if(chk.ready){
 clearInterval(poll);
 clearInterval(spinnerTimer);
-progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+modelName+'</b>';
+progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+escapeHtml(modelName)+'</b>';
 progressDiv.style.color='var(--text-green)';
 output.scrollTop=output.scrollHeight;
 await loadStatus();
@@ -951,12 +985,30 @@ progressDiv.style.color='var(--text-danger)';
 output.scrollTop=output.scrollHeight;
 }}catch(e){}},2500);
 }catch(e){
-output.innerHTML+='<div style="color:var(--text-danger)">'+t('containerError')+': '+(e.message||'')+'</div>';
+output.innerHTML+='<div style="color:var(--text-danger)">'+t('containerError')+': '+escapeHtml(e.message||'')+'</div>';
 output.scrollTop=output.scrollHeight;}}
 
-async function changeGpu(id,oldIdx,newIdx){if(!newIdx||newIdx===oldIdx)return;try{await apiDelete('/api/instances/'+id+'/gpu/'+oldIdx);await apiPost('/api/instances/'+id+'/gpu',{gpu_idx:newIdx});_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
+async function changeGpu(id, oldGpu, select){
+    const newGpu = select.value;
+    const oldValue = oldGpu === '__select__' ? '' : oldGpu;
+    if (!newGpu || newGpu === oldGpu) {
+        select.value = oldValue;
+        return;
+    }
+    select.disabled = true;
+    try {
+        const result = await apiPatch('/api/instances/' + encodeURIComponent(id) + '/gpu/' + encodeURIComponent(oldGpu), {gpu_idx:newGpu});
+        if (result.success !== true) throw new Error(result.message || 'save failed');
+    } catch (error) {
+        select.value = oldValue;
+        toast(error.message, true);
+    } finally {
+        select.disabled = false;
+        _mutate = true;
+        await loadStatus();
+    }
+}
 async function addGpuSlot(id){const card=document.querySelector(`.instance-card[data-inst="${id}"]`);if(card&&card.querySelector('.inst-gpu-row[data-gpu="__select__"]')){toast('Already have an empty slot',true);return;}try{await apiPost('/api/instances/'+id+'/gpu',{gpu_idx:'__select__'});_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
-async function addSelectedGpu(id,gpuIdx){if(!gpuIdx)return;try{await apiPost('/api/instances/'+id+'/gpu',{gpu_idx:gpuIdx});_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
 async function delGpu(id,idx){try{await apiDelete('/api/instances/'+id+'/gpu/'+idx);_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
 async function addLoraTo(id,name){if(!name)return;try{const r=await apiPost('/api/instances/'+id+'/lora',{lora:name});toast(r.message||'Lora assigned');_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
 async function delLora(id,name){try{const r=await apiDelete('/api/instances/'+id+'/lora?lora='+encodeURIComponent(name));toast(r.message||'Lora removed');_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}}
@@ -998,7 +1050,7 @@ if(d.parent&&d.parent!==d.path)html+='<div class="fs-entry" onclick="fsUp()"><sp
 for(const e of d.entries){
 const cls=e.type==='dir'?'fs-dir':'fs-file';
 const sz=e.size_gb?(e.size_gb+' GB'):(e.size_mb?(e.size_mb+' MB'):'');
-html+=`<div class="fs-entry ${cls}" data-name="${e.name}" onclick="fsPick(this)"><span>${e.name}</span>${sz?'<span class="fs-size">'+sz+'</span>':''}</div>`;
+html+=`<div class="fs-entry ${cls}" data-name="${escapeHtml(e.name)}" onclick="fsPick(this)"><span>${escapeHtml(e.name)}</span>${sz?'<span class="fs-size">'+sz+'</span>':''}</div>`;
 }
 document.getElementById('fsList').innerHTML=html||'<div class="fs-empty">empty</div>';
 fsStatus();
@@ -1116,18 +1168,6 @@ const v=(_dlgMode==='prompt')?document.getElementById('dlgInput').value:true;
 document.getElementById('dlgOverlay').style.display='none';
 if(_dlgRes){const r=_dlgRes;_dlgRes=null;r(v);}}
 
-async function onModelChange(id,m){
-if(!m)return;const el=document.getElementById('stats_'+id);if(!el)return;
-const card0=document.querySelector(`.instance-card[data-inst="${id}"]`);
-const mm0=card0?card0.querySelector('.inst-mmproj')?.value||'':'';
-const mt0=card0?card0.querySelector('.inst-mtp')?.value||'':'';
-const pNum0=parseInt(card0?.querySelector('.inst-parallel')?.value)||1;
-try{const d=await apiPost('/api/calculate',{model:m,mmproj:mm0,mtp:mt0,dir:(INSTANCES.find(i=>i.id===id)?.models_dir)||'',free_vram_gb:_cardVramGb(card0),ngl:99,flash_attn:true,ram_kv:false,kvq:'fp16',num_gpus:_cardGpuCount(card0),parallel:pNum0});
-if(d&&d.params){const p=d.params;let h='Size: <span class="val-white">'+(p.size_gb||'?')+' GB</span>';if(p.context_length)h+=' | Max cb: <span class="yell">'+p.context_length.toLocaleString()+'</span>';h+=' | Layers: <span class="val-white">'+p.n_layers+'</span>';if(p.n_embd)h+=' | n_embd: <span class="val-white">'+p.n_embd+'</span>';if(p.n_embd_kv)h+=' | n_embd_kv: <span class="val-white">'+p.n_embd_kv+'</span>';if(p.n_kv_heads)h+=' | n_kv_heads: <span class="val-white">'+p.n_kv_heads+'</span>';h+='<br>';if(p.mla)h+='MLA: key_len: <span class="val-white">'+p.key_length+'</span> val_len: <span class="val-white">'+p.value_length+'</span>';if(p.n_expert>0){if(p.mla)h+=' | ';h+='MoE: experts <span class="val-white">'+p.n_expert+'</span> active: <span class="val-white">'+p.n_expert_used+'</span>';}h+='<br>KV/token FP16: <span class="val-white">'+d.kv_per_token.fp16+' MiB</span> | Q8_0: <span class="val-white">'+d.kv_per_token.q8_0+' MiB</span> | Q4_0: <span class="val-white">'+d.kv_per_token.q4_0+' MiB</span> | Selected KV/token: <span class="val-white">'+d.kvpt_selected+' MiB</span>';el.innerHTML=h;
-const card=document.querySelector(`.instance-card[data-inst="${id}"]`);if(card){const footerEl=card.querySelector('.inst-footer-stats .yell');const pNum=parseInt(card.querySelector('.inst-parallel')?.value)||1;if(footerEl&&d.recommended_cap!=null){const slotHit=(d.model_max_ctx>0&&d.recommended_slot>=d.model_max_ctx);const slotTxt=slotHit?('Max cb: '+fmtK(d.model_max_ctx)):fmtK(d.recommended_slot);footerEl.textContent='~ '+fmtK(d.recommended_ctx)+' ( '+pNum+' x '+slotTxt+' ) - [max ctx vram/ram '+fmtK(d.recommended_cap)+']';}const ngls=card.querySelectorAll('input.inst-ngl, span.inst-ngl-cpu');if(ngls.length>=2&&p.n_layers){ngls[0].max=99;ngls[1].max=99;ngls[0].dataset.nlayers=p.n_layers;const cur=parseInt(ngls[0].value)||0;if(cur<p.n_layers){ngls[0].value=p.n_layers;ngls[0].setAttribute('data-saved',p.n_layers);}ngls[1].textContent=Math.max(0,p.n_layers-(parseInt(ngls[0].value)||0));}} }else el.innerHTML='<span style="color:var(--text-secondary)">No stats</span>';
-}catch(e){el.innerHTML='<span style="color:var(--text-danger)">Error</span>';}
-saveParams(id);}
-
 async function pickFolder(){
 const p=await dlgPrompt({title:'MODELS DIR',text:'Path to models:',value:_savedModelsDir||'/opt/butler/models/',ok:'APPLY'});
 if(p===null)return;p=(p||'').trim();
@@ -1206,7 +1246,7 @@ try{const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-
 const reader=r.body.getReader();const decoder=new TextDecoder();let buf='',think='',reply='';
 while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')&&!line.includes('[DONE]')){try{const d=JSON.parse(line.slice(5));const c=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.content||'';const t=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.reasoning_content||'';if(t){think+=t;thinkDiv.textContent=think.replace(/</g,'&lt;').replace(/>/g,'&gt;');}if(c){reply+=c;replyDiv.textContent=reply.replace(/</g,'&lt;').replace(/>/g,'&gt;');}output.scrollTop=output.scrollHeight;}catch(e){}}}}
 _chatHistory.push({role:'assistant',content:reply});if(think)_chatHistory[_chatHistory.length-1].reasoning_content=think;
-}catch(e){if(e.name!='AbortError'){replyDiv.innerHTML+='<div style="color:var(--text-danger)">Error: '+(e.message||'')+'</div>';}}
+}catch(e){if(e.name!='AbortError'){replyDiv.innerHTML+='<div style="color:var(--text-danger)">Error: '+escapeHtml(e.message||'')+'</div>';}}
 finally{sb.classList.remove('stop');sb.innerHTML='<svg viewBox="0 0 25 25"><polygon fill="#FEFEFE" points="24.5,0.5 18.12,25.5 13.34,11.66 -0.5,6.88 "/></svg>';cb.disabled=false;_isGenerating=false;}}
 
 async function butlerAutoStart(id){
@@ -1227,19 +1267,20 @@ output.scrollTop=output.scrollHeight;
 try{await apiPost('/api/unload',{instance:other.id});}catch(e){}}}
 if(busyGpus.length)await loadStatus();
 // Start
+if(pendingCardSaves.has(id))await pendingCardSaves.get(id);
 const card=document.querySelector(`.instance-card[data-inst="${id}"]`);
 if(!card)return false;
 const ms=card.querySelector('.inst-model'),model=ms?ms.value:inst.model;
 if(!model)return false;
-const ngl=parseInt(card.querySelector('.inst-ngl')?.value)||99;
-const ctx=parseInt(card.querySelector('.inst-ctx')?.value)||16384;
+const ngl=Number(card.querySelector('.inst-ngl')?.value ?? 99);
+const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
 const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
 const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStarting')+' <b>'+instName+'</b></div>';
 const modelName=(model||'').replace(/^.*[/\\]/,'');
-if(modelName)output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+modelName+'</b></div>';
+if(modelName)output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>';
 output.scrollTop=output.scrollHeight;
 setInstIntent(id,'up');
 try{
@@ -1256,7 +1297,7 @@ if(!r||!r.success){clearInterval(spinnerTimer);if(_is[id])_is[id].pending=false;
 for(let i=0;i<180;i++){
 await new Promise(r=>setTimeout(r,1000));
 try{const chk=await(await fetch('/api/check/'+id)).json();
-if(chk.ready){clearInterval(spinnerTimer);await loadStatus();progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+modelName+'</b>';progressDiv.style.color='var(--text-green)';output.scrollTop=output.scrollHeight;
+if(chk.ready){clearInterval(spinnerTimer);await loadStatus();progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+escapeHtml(modelName)+'</b>';progressDiv.style.color='var(--text-green)';output.scrollTop=output.scrollHeight;
 // Send greeting if auto-request enabled
 const autoReqCheck=document.getElementById('autoReqCheck');
 if(autoReqCheck&&autoReqCheck.checked){

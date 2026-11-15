@@ -1,4 +1,5 @@
 import ast,asyncio,copy,json,re,secrets,threading
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,17 +8,17 @@ root=Path(__file__).resolve().parents[1]
 tree=ast.parse((root/'butler.py').read_text(encoding='utf-8'))
 names={'InputError','_integer','_port_value','_unique_port','_instance_id','_gpu_value',
        '_validate_control_payload','_read_json_object','input_error_response','api_create',
-       'api_rename','api_reporte','api_save_params','api_add_gpu','api_add_lora'}
+       '_checked_instance_port','api_rename','api_reporte','api_save_params','api_add_gpu','api_replace_gpu','api_add_lora'}
 nodes=[n for n in tree.body if isinstance(n,(ast.ClassDef,ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in names]
 for node in nodes:
     if hasattr(node,'decorator_list'):node.decorator_list=[]
 class Request:
     def __init__(self,body,path='/api/instances',raw=False):self.data=body;self.raw=raw;self.url=SimpleNamespace(path=path)
     async def json(self):return json.loads(self.data) if self.raw else self.data
-store=[];lock=threading.RLock()
+store=[];lock=threading.RLock();active={}
 def save(instances):store[:]=copy.deepcopy(instances)
 ns=dict(re=re,secrets=secrets,Request=Request,JSONResponse=JSONResponse,PORT=8090,
-        _instances_lock=lock,load_instances=lambda:copy.deepcopy(store),save_instances=save,
+        _instances_lock=lock, _model_start_lock=asyncio.Lock(), nullcontext=nullcontext, get_active_containers=lambda **kwargs:active,load_instances=lambda:copy.deepcopy(store),save_instances=save,
         _resolve_ref=lambda inst,ref:'a.gguf' if ref in ('a.gguf','alias') else ref)
 exec(compile(ast.Module(body=nodes,type_ignores=[]),'<validation tests>','exec'),ns)
 Error=ns['InputError']
@@ -45,6 +46,10 @@ async def checks():
     assert store[1]['id']=='legacy-safe'
     for port in (0,1,65535,''):
         await ns['api_reporte']('legacy-safe',Request({'port':port}))
+    active['legacy-safe'] = {}
+    await bad(ns['api_reporte']('legacy-safe', Request({'port': 19001})))
+    await bad(ns['api_rename']('legacy-safe', Request({'port': 19001})))
+    active.clear()
     await bad(ns['api_reporte']('legacy-safe',Request({'port':18001})))
     await bad(ns['api_rename']('legacy-safe',Request({'name':'new','port':18001})))
     for key,value in (('ctx',-1),('parallel',0),('ngl',-1),('mtp_nmax',-1),('ctx','no'),('parallel',True),('flash','false'),('models_dir',[])):
@@ -56,6 +61,18 @@ async def checks():
     await bad(ns['api_add_gpu'](iid,Request({})))
     await ns['api_add_gpu'](iid,Request({'gpu_idx':'__select__'}))
     await bad(ns['api_add_gpu'](iid,Request({'gpu_idx':'__select__'})))
+    replace_gpu = ns['api_replace_gpu']
+    before = copy.deepcopy(store)
+    await bad(replace_gpu(iid, 'GPU0', Request({'gpu_idx': 'bad'})))
+    assert store == before
+    response = await replace_gpu(iid, '__select__', Request({'gpu_idx': 2}))
+    assert response.status_code == 200 and store[0]['gpu_indices'] == ['GPU0', 'GPU2']
+    for old, new in [('GPU0', 'GPU2'), ('GPU9', 'GPU1')]:
+        before = copy.deepcopy(store)
+        response = await replace_gpu(iid, old, Request({'gpu_idx': new}))
+        assert response.status_code == 409 and store == before
+    response = await replace_gpu(iid, '0', Request({'gpu_idx': 'GPU1'}))
+    assert response.status_code == 200 and store[0]['gpu_indices'] == ['GPU1', 'GPU2']
     await ns['api_add_lora'](iid,Request({'lora':'a.gguf'}))
     await bad(ns['api_add_lora'](iid,Request({'lora':'alias'})))
     for body in ({'path':[]},{'api_key':None},{'free_vram_gb':'nan'},{'loras':['a','a']}):

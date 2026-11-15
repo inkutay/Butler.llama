@@ -1,6 +1,7 @@
 {
   "api_url": "http://127.0.0.1:8090/v1",
-  "api_key": "REPLACE_WITH_RANDOM_API_KEY",
+  "api_key": "",
+  "internal_api_key": "",
   "models_dir": "/opt/butler/models",
   "auth_user": "admin",
   "auth_pass": "CHOOSE_YOUR_OWN_PASSWORD",

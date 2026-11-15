@@ -1,3 +1,4 @@
+import json
 import ast, asyncio, hmac, json
 from datetime import datetime,timedelta,timezone
 from pathlib import Path
@@ -5,7 +6,7 @@ from types import SimpleNamespace
 from starlette.responses import JSONResponse
 root=Path(__file__).resolve().parents[1]
 tree=ast.parse((root/'butler.py').read_text(encoding='utf-8'))
-names={'_secret_equal','_mk_access','_mk_refresh','auth_mw','v1_models','_v1_route_by_mode','v1_embeddings','v1_rerank'}
+names={'_secret_equal','_mk_access','_mk_refresh','auth_mw','v1_models','_v1_route_by_mode','v1_embeddings','v1_rerank','_proxy_model_json'}
 nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in names]
 for n in nodes:n.decorator_list=[]
 count={};instances=[];active={};mode={'mode':'ON'};state={'start':'ok','post':'ok','authorized':True}
@@ -18,6 +19,9 @@ async def start(inst):
     if state['start']=='error':raise RuntimeError('start failed')
     return state['start']=='ok'
 async def auth(req):return state['authorized']
+class RequestError(Exception): pass
+class TimeoutException(RequestError): pass
+
 class Client:
     def __init__(self,**kw):pass
     async def __aenter__(self):return self
@@ -26,6 +30,9 @@ class Client:
         assert count['a']==1
         if state['post']=='cancel':raise asyncio.CancelledError()
         if state['post']=='error':raise RuntimeError('upstream failed')
+        if state['post']=='connection':raise RequestError()
+        if state['post']=='timeout':raise TimeoutException()
+        if state['post']=='nonjson':return SimpleNamespace(json=lambda:json.loads('not JSON'),status_code=200)
         return SimpleNamespace(json=lambda:{'data':[]},status_code=200)
 class Request:
     def __init__(self,path='/api/models',token=None):self.url=SimpleNamespace(path=path);self.token=token
@@ -33,7 +40,7 @@ class Request:
 ns=dict(asyncio=asyncio,hmac=hmac,datetime=datetime,timedelta=timedelta,timezone=timezone,Request=Request,
         JSONResponse=JSONResponse,load_instances=lambda:instances,get_active_containers=lambda:active,
         butler_state=mode,inflight_bump=bump,mark_active=lambda _:None,butler_start_instance=start,
-        _v1_auth_ok=auth,httpx=SimpleNamespace(AsyncClient=Client),API_KEY='test',_get_token=lambda r:r.token,
+        _v1_auth_ok=auth,httpx=SimpleNamespace(AsyncClient=Client,RequestError=RequestError,TimeoutException=TimeoutException),API_KEY='test',_get_token=lambda r:r.token,
         _verify=lambda token:token=='valid',jwt=SimpleNamespace(encode=lambda payload,*a,**kw:payload),
         JWT_SECRET='test',JWT_ALGO='HS256',JWT_ACCESS_MIN=1440,JWT_REFRESH_DAYS=30)
 ns['_read_json_object'] = lambda request: request.json()
@@ -54,6 +61,20 @@ async def checks():
     inst,err=await ns['_v1_route_by_mode']('missing','embed')
     assert inst is None and err.status_code==404
     mode['mode']='ON'
+    instances[:] = [
+        dict(id="x", name="same", model="one", mode="chat"),
+        dict(id="y", name="same", model="two", mode="chat"),
+        dict(id="z", name="x", model="three", mode="chat"),
+    ]
+    active["x"] = {}
+    response = await ns["v1_models"](Request())
+    assert [item["id"] for item in json.loads(response.body)["data"]] == ["x", "y", "z"]
+    inst, error = await ns["_v1_route_by_mode"]("same", "chat")
+    assert inst is None and error.status_code == 409
+    inst, error = await ns["_v1_route_by_mode"]("x", "chat")
+    assert inst["id"] == "x" and error is None
+    bump("x", -1)
+    active.clear()
     for route,model_mode in (('v1_embeddings','embed'),('v1_rerank','rerank')):
         instances[:]=[dict(id='a',name='model',model='model.gguf',mode=model_mode,port=123)]
         for outcome in ('ok','false','error','cancel'):
@@ -62,6 +83,11 @@ async def checks():
             except (RuntimeError,asyncio.CancelledError):assert outcome in ('error','cancel')
             else:assert r.status_code==(200 if outcome=='ok' else 503)
             assert count['a']==0
+        state['start']='ok'
+        for outcome, code in (('connection', 502), ('timeout', 504), ('nonjson', 502)):
+            state['post'] = outcome
+            result = await ns[route](Request())
+            assert result.status_code == code and count['a'] == 0
         state['start']='ok'
         for outcome in ('error','cancel'):
             state['post']=outcome

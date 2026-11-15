@@ -1,9 +1,9 @@
 import ast
 import asyncio
 from functools import wraps
-import os
+import re
+import subprocess
 from pathlib import Path
-import tempfile
 import time
 from types import SimpleNamespace
 
@@ -12,25 +12,39 @@ tree=ast.parse((root/'butler.py').read_text(encoding='utf-8'))
 names={'_llama_try_load','_poll_slots','_serialized_model_start','_start_from_calibration','_restart_with_ctx','_restore_instance','_restart_for_calibration'}
 nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in names]
 calls=[]
-def run(cmd,**kw):
+state = "running false"
+stderr = ""
+health = 200
+launch_code = 0
+
+def run(cmd, **kw):
     calls.append(cmd)
-    return SimpleNamespace(returncode=0,stdout='running' if kw.get('text') else b'',stderr=b'')
-ns=dict(asyncio=asyncio,wraps=wraps,os=os,time=SimpleNamespace(time=time.time,sleep=lambda _:None),
-        subprocess=SimpleNamespace(run=run),DOCKER_IMAGE='runtime',LLAMA_SERVER='/app/llama-server',API_KEY='test',
-        _docker_host_path=lambda p:p,_cuda_devices_str=lambda g:','.join(g),
-        reset_speed_extrema=lambda _:None,mtp_flags=lambda m,n:['--mtp-test',m],
-        httpx=SimpleNamespace(get=lambda *a,**kw:SimpleNamespace(status_code=200)))
+    if cmd[1] == "inspect":
+        return SimpleNamespace(returncode=0, stdout=state)
+    if cmd[1] == "logs":
+        return SimpleNamespace(returncode=0, stdout="", stderr=stderr)
+    return SimpleNamespace(returncode=launch_code if cmd[1] == "run" else 0)
+
+ns=dict(asyncio=asyncio, wraps=wraps, re=re,
+        time=SimpleNamespace(monotonic=time.monotonic, sleep=lambda _: None),
+        subprocess=SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired),
+        _stop_rm_container=lambda name: calls.append(["docker", "stop", name]),
+        reset_speed_extrema=lambda _: None,
+        httpx=SimpleNamespace(get=lambda *a, **kw: SimpleNamespace(status_code=health)))
 exec(compile(ast.Module(body=nodes,type_ignores=[]),'<review functions>','exec'),ns)
-with tempfile.TemporaryDirectory() as tmp:
-    ns['_current_models_dir']=tmp+'/default'
-    custom=Path(tmp)/'custom';custom.mkdir()
-    for name in ('vision.gguf','draft.gguf'):(custom/name).touch()
-    assert ns['_llama_try_load']('test','model.gguf',8192,99,True,False,'q8_0',1,18001,[],mmproj='vision.gguf',mtp='draft.gguf',models_dir=str(custom))
-    cmd=next(c for c in calls if c[:2]==['docker','run'])
-    assert str(custom)+':/models:ro' in cmd and '--mmproj' in cmd and '--mtp-test' in cmd
+command = ["docker", "run"]
+for state, stderr, health, launch_code, outcome in (
+    ("running false", "", 200, 0, "ready"),
+    ("running false", "", 503, 0, "timeout"),
+    ("exited true", "", 503, 0, "oom"),
+    ("exited false", "CUDA error: out of memory", 503, 0, "oom"),
+    ("exited false", "cannot open model file", 503, 0, "failed"),
+    ("running false", "", 503, 1, "docker_error"),
+):
     calls.clear()
-    assert ns['_llama_try_load']('test','model.gguf',8192,99,True,False,'q8_0',1,18001,[])
-    assert ns['_current_models_dir']+':/models:ro' in next(c for c in calls if c[:2]==['docker','run'])
+    assert ns['_llama_try_load']('test', 18001, command, wait_s=0) == outcome
+    assert command in calls
+    assert sum(c[:3] == ["docker", "rm", "-f"] for c in calls) == (0 if outcome == "ready" else 1)
 instances=[dict(id='a',port=1),dict(id='b',port=2)]
 ns['load_instances']=lambda:instances
 polled=[]
@@ -39,7 +53,7 @@ assert ns['_poll_slots']({'a':{}})=={'a':dict(active=1,total=2)} and polled==[1]
 status=next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='api_status')
 assert not any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='get_inst_slots' for n in ast.walk(status))
 autodetect=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='_api_autodetect_sync')
-assert any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='_llama_try_load' and any(k.arg=='models_dir' for k in n.keywords) for n in ast.walk(autodetect))
+assert any(isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='_build_instance_command' and any(k.arg=='models_dir' for k in n.keywords) for n in ast.walk(autodetect))
 
 async def check_threads():
     loop=asyncio.get_running_loop();ns['_main_loop']=loop;ns['_model_start_lock']=asyncio.Lock()
@@ -71,4 +85,4 @@ async def check_threads():
     except RuntimeError:pass
     else:raise AssertionError('unavailable loop must fail')
 asyncio.run(check_threads())
-print('PASS: custom/default model directories and attachments; background slots; calibration restart/restore uses main loop and waits for HTTP start lock; shutdown/same-thread guards')
+print('PASS: trial outcomes and configured model directory; background slots; calibration restart/restore uses main loop and waits for HTTP start lock; shutdown/same-thread guards')

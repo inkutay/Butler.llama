@@ -2,7 +2,8 @@ import os, re, time, json, struct, hashlib, logging, threading, subprocess, shut
 from functools import wraps
 from starlette.background import BackgroundTask
 from pathlib import Path
-from contextlib import asynccontextmanager
+import tempfile
+from contextlib import asynccontextmanager, nullcontext
 import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -26,9 +27,10 @@ PORT = int(os.getenv("PORT", "8090"))
 STATIC_DIR = Path(__file__).parent / "static"
 CONFIG_FILE = Path(__file__).parent / "butler_config.json"
 INSTANCES_FILE = Path(__file__).parent / "butler_instances.json"
+MODELS_DIR_DEFAULT = str(Path(__file__).resolve().parent / "models")
 DOCKER_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda"
 LLAMA_SERVER = "/app/llama-server"
-API_KEY = "***"
+API_KEY = "butler-local"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("butler")
@@ -155,7 +157,7 @@ async def _read_json_object(request):
 
 
 def load_config():
-    cfg = {"api_url": "http://127.0.0.1:8090/v1", "api_key": "***", "models_dir": "/opt/ai-stack/models", "idle_enabled": False, "idle_timeout_minutes": 30}
+    cfg = {"api_url": "http://127.0.0.1:8090/v1", "api_key": "", "models_dir": MODELS_DIR_DEFAULT, "idle_enabled": False, "idle_timeout_minutes": 30}
     if CONFIG_FILE.exists():
         try:
             c = json.loads(CONFIG_FILE.read_text("utf-8"))
@@ -164,11 +166,22 @@ def load_config():
     return cfg
 
 def save_config(cfg):
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2), "utf-8")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=CONFIG_FILE.parent,
+                                         prefix=CONFIG_FILE.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(cfg, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, CONFIG_FILE)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 config = load_config()
-_current_models_dir = config.get("models_dir", "/opt/ai-stack/models")
-API_KEY = config.get("api_key") or API_KEY
+_current_models_dir = config.get("models_dir") or MODELS_DIR_DEFAULT
+API_KEY = config.get("internal_api_key") or API_KEY
 
 def _docker_host_path(p):
     """Windows host path -> WSL2 path for docker volume mounts (no-op on Linux)."""
@@ -346,16 +359,21 @@ def _speed_sampler():
         time.sleep(1.0)
 
 # Active instances from Docker
-def get_active_containers():
+def get_active_containers(*, strict=False):
     try:
         r = subprocess.run(["docker", "ps", "--filter", "name=llama-inst-", "--format", "{{.Names}}"], capture_output=True, timeout=10, text=True)
+        if strict:
+            r.check_returncode()
         active = {}
         for line in r.stdout.strip().split("\n"):
             if not line.strip(): continue
-            name = line.strip().replace("llama-inst-", "")
+            name = line.strip().removeprefix("llama-inst-")
             active[name] = {"state": "ON"}
         return active
-    except: return {}
+    except Exception:
+        if strict:
+            raise
+        return {}
 
 def get_failed_containers():
     """Crashed llama containers: in `docker ps -a`, status exited, ExitCode != 0.
@@ -397,7 +415,7 @@ def _probe_ready(active):
             continue
         try:
             hr = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2)
-            ready[iid] = hr.status_code < 500
+            ready[iid] = hr.status_code == 200
         except Exception:
             ready[iid] = False
     return ready
@@ -1097,43 +1115,57 @@ async def api_move_inst(inst_id: str, request: Request):
         return JSONResponse({"success": True, "message": "Moved"})
     return JSONResponse({"success": False, "message": "Not found"})
 
+def _checked_instance_port(inst, value, instances):
+    port = _unique_port(value, instances, inst["id"])
+    if port != str(inst.get("port") or "0"):
+        try:
+            active = get_active_containers(strict=True)
+        except (OSError, subprocess.SubprocessError):
+            raise InputError("port: cannot verify container status") from None
+        if inst["id"] in active:
+            raise InputError("port: stop the instance before changing its port")
+    return port
+
+
 @app.patch("/api/instances/{inst_id}")
 async def api_rename(inst_id: str, request: Request):
     body = await _read_json_object(request)
     if "name" in body and not body["name"].strip():
         raise InputError("name: must not be empty")
-    with _instances_lock:
-        insts = load_instances()
-        for x in insts:
-            if x["id"] == inst_id:
-                if "port" in body:
-                    x["port"] = _unique_port(body["port"], insts, inst_id)
-                if "name" in body: x["name"] = body["name"]
-                if "ngl" in body: x["ngl"] = int(body["ngl"])
-                if "ctx" in body: x["ctx"] = int(body["ctx"])
-                if "flash" in body: x["flash"] = body["flash"]
-                if "ram" in body: x["ram"] = body["ram"]
-                if "kvq" in body: x["kvq"] = body["kvq"]
-                if "parallel" in body: x["parallel"] = int(body["parallel"])
-                if "model" in body: x["model"] = body["model"]
-                if "mode" in body and body["mode"] in ("chat", "embed", "rerank"): x["mode"] = body["mode"]
-                if "allowed" in body: x["allowed"] = bool(body["allowed"])
-                if "idle_exempt" in body: x["idle_exempt"] = bool(body["idle_exempt"])
-                save_instances(insts)
-                return JSONResponse({"success": True, "message": "Updated"})
-    return JSONResponse({"success": False, "message": "Not found"})
+    async with _model_start_lock if "port" in body else nullcontext():
+        with _instances_lock:
+            insts = load_instances()
+            for x in insts:
+                if x["id"] == inst_id:
+                    if "port" in body:
+                        x["port"] = _checked_instance_port(x, body["port"], insts)
+                    if "name" in body: x["name"] = body["name"]
+                    if "ngl" in body: x["ngl"] = int(body["ngl"])
+                    if "ctx" in body: x["ctx"] = int(body["ctx"])
+                    if "flash" in body: x["flash"] = body["flash"]
+                    if "ram" in body: x["ram"] = body["ram"]
+                    if "kvq" in body: x["kvq"] = body["kvq"]
+                    if "parallel" in body: x["parallel"] = int(body["parallel"])
+                    if "model" in body: x["model"] = body["model"]
+                    if "mode" in body and body["mode"] in ("chat", "embed", "rerank"): x["mode"] = body["mode"]
+                    if "allowed" in body: x["allowed"] = bool(body["allowed"])
+                    if "idle_exempt" in body: x["idle_exempt"] = bool(body["idle_exempt"])
+                    save_instances(insts)
+                    return JSONResponse({"success": True, "message": "Updated"})
+        return JSONResponse({"success": False, "message": "Not found"})
 
 @app.patch("/api/instances/{inst_id}/port")
 async def api_reporte(inst_id: str, request: Request):
     body = await _read_json_object(request)
-    with _instances_lock:
-        insts = load_instances()
-        for x in insts:
-            if x["id"] == inst_id:
-                x["port"] = _unique_port(body.get("port", x["port"]), insts, inst_id)
-                save_instances(insts)
-                return JSONResponse({"success": True, "message": "Port updated"})
-    return JSONResponse({"success": False, "message": "Not found"})
+    async with _model_start_lock:
+        with _instances_lock:
+            insts = load_instances()
+            for x in insts:
+                if x["id"] == inst_id:
+                    x["port"] = _checked_instance_port(x, body.get("port", x["port"]), insts)
+                    save_instances(insts)
+                    return JSONResponse({"success": True, "message": "Port updated"})
+        return JSONResponse({"success": False, "message": "Not found"})
 
 @app.post("/api/instances/{inst_id}/gpu")
 async def api_add_gpu(inst_id: str, request: Request):
@@ -1157,6 +1189,30 @@ async def api_add_gpu(inst_id: str, request: Request):
         inst["gpu_indices"].append(gpu_idx)
         save_instances(insts)
     return JSONResponse({"success": True, "message": f"GPU {gpu_idx} added"})
+
+@app.patch("/api/instances/{inst_id}/gpu/{gpu_idx}")
+async def api_replace_gpu(inst_id: str, gpu_idx: str, request: Request):
+    body = await _read_json_object(request)
+    old_gpu = _gpu_value(gpu_idx)
+    new_gpu = _gpu_value(body.get("gpu_idx", ""))
+    if new_gpu == "__select__":
+        raise InputError("gpu_idx: select a GPU")
+    with _instances_lock:
+        instances = load_instances()
+        instance = next((item for item in instances if item["id"] == inst_id), None)
+        if instance is None:
+            return JSONResponse({"success": False, "message": "Instance not found"}, status_code=404)
+        gpus = instance.get("gpu_indices", [])
+        normalized = [_gpu_value(value) for value in gpus]
+        if old_gpu not in normalized:
+            return JSONResponse({"success": False, "message": "GPU slot changed; refresh and try again"}, status_code=409)
+        if old_gpu != new_gpu:
+            if new_gpu in normalized:
+                return JSONResponse({"success": False, "message": "GPU already assigned"}, status_code=409)
+            gpus[normalized.index(old_gpu)] = new_gpu
+            save_instances(instances)
+    return JSONResponse({"success": True, "message": "GPU replaced"})
+
 
 @app.delete("/api/instances/{inst_id}/gpu/{gpu_idx}")
 async def api_del_gpu(inst_id: str, gpu_idx: str):
@@ -1465,91 +1521,62 @@ def mtp_flags(mtp, nmax=0):
         pass
     return f
 
-def _llama_try_load(iid, mn, ctx, ngl, flash, ram, kvq, parallel, port, gpu_nums, mmproj="", wait_s=120, docker_image="", mtp="", mtp_nmax=0, models_dir=""):
-    """Try to start llama-server with given TOTAL ctx. True = model loaded (container left running),
-    False = failed (container removed). ctx is TOTAL budget; llama.cpp splits it by --parallel."""
-    img = docker_image or DOCKER_IMAGE
-    md = models_dir or _current_models_dir
+def _llama_try_load(iid, port, command, wait_s=120):
+    """Return the trial outcome and keep the container only if ready."""
     name = f"llama-inst-{iid}"
-    subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
-    subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-    time.sleep(1)
-    kvq_flag = {"fp16": "f16", "q8_0": "q8_0", "q4_0": "q4_0"}.get(kvq, "f16")
-    if gpu_nums:
-        ds = _cuda_devices_str(gpu_nums)
-        cmd = ["docker", "run", "-d", "--name", name, "--restart", "no",
-               "--gpus", "all", "-e", f"CUDA_VISIBLE_DEVICES={ds}", "-p", f"{port}:8080",
-               "-v", f"{_docker_host_path(md)}:/models:ro", "--entrypoint", LLAMA_SERVER, img,
-               "-m", f"/models/{mn}", "--host", "0.0.0.0", "--port", "8080",
-               "--n-gpu-layers", str(ngl), "--ctx-size", str(ctx),
-               "--flash-attn", "1" if flash else "0", "--api-key", API_KEY,
-                "-b", "512", "--parallel", str(parallel), "--cont-batching", "--metrics",
-               "--cache-type-k", kvq_flag, "--cache-type-v", kvq_flag]
-    else:
-        cmd = ["docker", "run", "-d", "--name", name, "--restart", "no",
-               "-p", f"{port}:8080",
-               "-v", f"{_docker_host_path(md)}:/models:ro", "--entrypoint", LLAMA_SERVER, img,
-               "-m", f"/models/{mn}", "--host", "0.0.0.0", "--port", "8080",
-               "--n-gpu-layers", "0", "--ctx-size", str(ctx),
-               "--flash-attn", "1" if flash else "0", "--api-key", API_KEY,
-                "-b", "512", "--parallel", str(parallel), "--cont-batching", "--metrics",
-               "--cache-type-k", kvq_flag, "--cache-type-v", kvq_flag]
-    if ram: cmd.append("--no-kv-offload")
-    if mmproj and os.path.isfile(os.path.join(md, mmproj)):
-        cmd.extend(["--mmproj", f"/models/{mmproj}"])
-    if mtp == "builtin" or (mtp and os.path.isfile(os.path.join(md, mtp))):
-        cmd.extend(mtp_flags(mtp, mtp_nmax))
-    reset_speed_extrema(iid)
+    ready = False
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=30)
-        if r.returncode != 0:
-            subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-            return False
-    except Exception:
-        subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-        return False
-    # Wait for success (health ok / "model loaded") or failure (exited / alloc error)
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        time.sleep(2)
-        try:
-            st = subprocess.run(["docker", "inspect", "--format", "{{.State.Status}}", name],
-                               capture_output=True, timeout=10, text=True).stdout.strip()
-        except Exception:
-            st = ""
-        if st in ("exited", "dead", "restarting"):
-            logs = subprocess.run(["docker", "logs", name], capture_output=True, timeout=10).stdout.decode(errors="ignore")[-3000:].lower()
-            if "allocate" in logs or "out of memory" in logs or "cannot" in logs:
-                subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
-                subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-                return False
-            continue
-        try:
-            hr = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3)
-            if hr.status_code < 500:
-                return True
-        except Exception:
-            pass
-        logs = subprocess.run(["docker", "logs", name], capture_output=True, timeout=10).stdout.decode(errors="ignore")[-3000:].lower()
-        if "allocate" in logs and "error" in logs:
-            subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
-            subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-            return False
-        if "model loaded" in logs or "listening on" in logs:
-            return True
-    # Deadline: final verdict
-    try:
-        hr = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3)
-        if hr.status_code < 500:
-            return True
-    except Exception:
-        pass
-    logs = subprocess.run(["docker", "logs", name], capture_output=True, timeout=10).stdout.decode(errors="ignore")[-3000:].lower()
-    if "model loaded" in logs or "listening on" in logs:
-        return True
-    subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
-    subprocess.run(["docker", "rm", name], capture_output=True, timeout=10)
-    return False
+        _stop_rm_container(name)
+        reset_speed_extrema(iid)
+        started = subprocess.run(command, capture_output=True, timeout=30)
+        if started.returncode != 0:
+            return "docker_error"
+
+        deadline = time.monotonic() + wait_s
+        while True:
+            state = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}} {{.State.OOMKilled}}", name],
+                capture_output=True, timeout=10, text=True,
+            )
+            if state.returncode != 0:
+                return "docker_error"
+            status, _, oom_killed = state.stdout.strip().partition(" ")
+            if oom_killed == "true":
+                return "oom"
+            if status in ("exited", "dead", "restarting"):
+                logs = subprocess.run(
+                    ["docker", "logs", "--tail", "100", name],
+                    capture_output=True, timeout=10, text=True, errors="replace",
+                )
+                if logs.returncode == 0 and re.search(
+                    r"\bout of memory\b|\bcudaErrorMemoryAllocation\b|\bhipErrorOutOfMemory\b",
+                    logs.stdout + logs.stderr, re.IGNORECASE,
+                ):
+                    return "oom"
+                return "failed"
+
+            try:
+                ready = httpx.get(f"http://127.0.0.1:{port}/health", timeout=3).status_code == 200
+            except httpx.RequestError:
+                pass
+            if ready:
+                return "ready"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "timeout"
+            time.sleep(min(2, remaining))
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except OSError:
+        return "docker_error"
+    finally:
+        if not ready:
+            try:
+                removed = subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)
+                if removed.returncode and b"No such container" not in removed.stderr:
+                    log.warning("autodetect %s: could not remove trial container", iid)
+            except (OSError, subprocess.TimeoutExpired):
+                log.warning("autodetect %s: could not remove trial container", iid)
 
 
 # Serialize manual and automatic starts, including GPU conflict resolution.
@@ -1567,7 +1594,11 @@ def _serialized_model_start(fn):
 @_serialized_model_start
 async def api_autodetect(iid: str, request: Request):
     body = await _read_json_object(request)
-    return await _run_blocking(_api_autodetect_sync, iid, body)
+    inflight_bump(iid, 1)
+    try:
+        return await _run_blocking(_api_autodetect_sync, iid, body)
+    finally:
+        inflight_bump(iid, -1)
 
 
 def _api_autodetect_sync(iid, body):
@@ -1583,14 +1614,17 @@ def _api_autodetect_sync(iid, body):
     if not os.path.isfile(mp):
         return JSONResponse({"success": False, "message": "Model file not found"})
     port = inst.get("port", "")
-    if not port or port == "0":
+    if not port or str(port) == "0":
         return JSONResponse({"success": False, "message": "Port not set"})
-    params = get_cached_model_params(mn, md)
+    user_max = _integer(body.get("max_ctx", 0), "max_ctx")
+    parallel = _integer(body.get("parallel", inst.get("parallel", 1)), "parallel", minimum=1)
+    try:
+        params = get_cached_model_params(mn, md) or {}
+    except (OSError, ValueError, struct.error):
+        return JSONResponse({"success": False, "message": "Could not read model metadata"})
     model_max = int(params.get("context_length", 0) or 0) or 131072
-    user_max = int(body.get("max_ctx", 0) or 0)
     hi = min(model_max, user_max) if user_max else model_max
-    lo = 8192
-    parallel = int(body.get("parallel", inst.get("parallel", 1)) or 1)
+    lo = min(8192, hi)
     ngl = int(inst.get("ngl", 99))
     flash = True if inst.get("mode", "chat") != "chat" else bool(inst.get("flash", True))
     ram = bool(inst.get("ram", False))
@@ -1598,19 +1632,29 @@ def _api_autodetect_sync(iid, body):
     gpu_nums = [str(x).replace("GPU", "") for x in inst.get("gpu_indices", []) if x != "__select__"]
     attempts = []
     cand = hi
-    best = 0
-    while cand >= lo:
-        ok = _llama_try_load(iid, mn, cand, ngl, flash, ram, kvq, parallel, port, gpu_nums, inst.get("mmproj", ""), docker_image=inst.get("docker_image", ""), mtp=inst.get("mtp", ""), mtp_nmax=inst.get("mtp_nmax", 0), models_dir=md)
-        attempts.append({"ctx": cand, "ok": ok})
-        log.info(f"autodetect {iid}: ctx={cand} parallel={parallel} -> {'OK' if ok else 'FAIL'}")
+    while True:
+        command = _build_instance_command(
+            inst, model=mn, models_dir=md, ctx=cand, ngl=ngl, flash=flash,
+            ram=ram, kvq=kvq, parallel=parallel, gpu_nums=gpu_nums,
+        )
+        outcome = _llama_try_load(iid, port, command)
+        ok = outcome == "ready"
+        attempts.append({"ctx": cand, "ok": ok, "reason": outcome})
+        log.info(f"autodetect {iid}: ctx={cand} parallel={parallel} -> {outcome}")
         if ok:
             best = cand
+            _apply_active_lora(iid, port)
+            mark_active(iid)
             break
-        if cand == lo:
-            break
+        if outcome != "oom" or cand == lo:
+            message = {
+                "oom": f"Out of memory at {cand} total tokens",
+                "timeout": f"Startup timed out at {cand} total tokens",
+                "docker_error": "Docker could not start or inspect the trial container",
+                "failed": "llama-server exited before it was ready. Check the model and launch settings.",
+            }[outcome]
+            return JSONResponse({"success": False, "message": message, "attempts": attempts})
         cand = max(cand // 2, lo)
-    if best == 0:
-        return JSONResponse({"success": False, "message": f"Not loaded even at {lo} total tokens", "attempts": attempts})
     with _instances_lock:
         insts = load_instances()
         for x in insts:
@@ -1788,7 +1832,7 @@ def _api_check_sync(iid):
         if inst:
             try:
                 hr = httpx.get(f"http://localhost:{inst['port']}/health", timeout=3)
-                if hr.status_code < 500:
+                if hr.status_code == 200:
                     _apply_active_lora(iid, inst["port"])
                     return JSONResponse({"ready": True, "status": "ready"})
             except:
@@ -1998,7 +2042,6 @@ async def api_get_config():
 
 @app.post("/api/config")
 async def api_set_config(request: Request):
-    global API_KEY
     body = await _read_json_object(request)
     c = load_config()
     _idle_was = bool(c.get("idle_enabled", False))
@@ -2020,8 +2063,6 @@ async def api_set_config(request: Request):
         _now = time.time()
         for _iid in get_active_containers().keys():
             _last_active[_iid] = _now
-    if c.get("api_key"):
-        API_KEY = c["api_key"]
     return JSONResponse({"success": True, **c})
 
 def _docker_image_exists(img):
@@ -2394,6 +2435,10 @@ async def butler_start_instance(inst, stop_conflicts=True):
     port = inst.get("port")
     if not port or port == "0":
         return False
+    stored = next((item for item in load_instances() if item["id"] == iid), None)
+    if stored is not None and str(stored.get("port")) != str(port):
+        log.warning("Instance %s changed port while waiting to start", iid)
+        return False
     # Another request may have started this instance while we waited for the lock.
     # Wait for readiness rather than issuing a second docker run with the same name.
     active_now = await asyncio.to_thread(get_active_containers)
@@ -2470,7 +2515,7 @@ async def butler_start_instance(inst, stop_conflicts=True):
                 try:
                     hr = await hc.get(f"http://127.0.0.1:{port}/health")
                     if hr.status_code == 200:
-                        _apply_active_lora(iid, port)
+                        await asyncio.to_thread(_apply_active_lora, iid, port)
                         return True
                 except Exception:
                     pass
@@ -2538,45 +2583,15 @@ async def v1_chat(request: Request):
     body = await _read_json_object(request)
     if not await _v1_auth_ok(request):
         return JSONResponse({"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}}, status_code=401)
-    inst_id = body.get("model", "")
-    instances = load_instances()
-    active = get_active_containers()
-    _any = next((i for i in instances if (i["id"] == inst_id or i.get("name") == inst_id) and i.get("mode", "chat") == "chat"), None)
-    if _any is not None and not _any.get("allowed", True):
-        return JSONResponse({"error": "Model not allowed (no permission mark)"}, status_code=403)
-    inst = next((i for i in instances if (i["id"] == inst_id or i.get("name") == inst_id) and i.get("mode", "chat") == "chat" and i["id"] in active), None)
-    _bumped = False
-    if not inst:
-        if butler_state.get("mode") == "ON":
-            inst = next((i for i in instances if (i["id"] == inst_id or i.get("name") == inst_id) and i.get("mode", "chat") == "chat"), None)
-            if not inst:
-                return JSONResponse({"error": "Model not found"}, status_code=404)
-            if inst["id"] not in active:
-                # protect from idle-unload DURING the load: mark active + inflight BEFORE loading
-                inflight_bump(inst["id"], 1); mark_active(inst["id"]); _bumped = True
-                try:
-                    ok = await butler_start_instance(inst)
-                except BaseException:
-                    inflight_bump(inst["id"], -1)
-                    raise
-                if not ok:
-                    inflight_bump(inst["id"], -1)
-                    return JSONResponse({"error": "Failed to start instance"}, status_code=503)
-        else:
-            return JSONResponse({"error": "Model not active"}, status_code=503)
+    inst, err = await _v1_route_by_mode(body.get("model", ""), "chat")
+    if err:
+        return err
     url = f"http://127.0.0.1:{inst['port']}/v1/chat/completions"
     hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
-    if not _bumped:
-        inflight_bump(inst["id"], 1); mark_active(inst["id"])
     if body.get("stream", False):
         return await _chat_stream_response(url, body, hdrs, inst["id"])
     try:
-        async with httpx.AsyncClient(timeout=300.0) as c:
-            t0 = time.time()
-            r = await c.post(url, json=body, headers=hdrs)
-            t1 = time.time()
-            log.info(f"v1 proxy non-stream took={t1-t0:.2f}s model={inst_id}")
-            return JSONResponse(content=r.json(), status_code=r.status_code)
+        return await _proxy_model_json(url, body, hdrs)
     finally:
         inflight_bump(inst["id"], -1)
 
@@ -2586,6 +2601,12 @@ async def v1_models(request: Request):
         return JSONResponse({"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}}, status_code=401)
     instances = load_instances()
     active = get_active_containers()
+    chat_instances = [inst for inst in instances if inst.get("mode", "chat") == "chat"]
+    name_counts = {}
+    instance_ids = {inst["id"] for inst in chat_instances}
+    for inst in chat_instances:
+        name = inst.get("name") or inst["id"]
+        name_counts[name] = name_counts.get(name, 0) + 1
     data = []
     for inst in instances:
         if not inst.get("model") or inst.get("mode", "chat") != "chat":
@@ -2593,7 +2614,10 @@ async def v1_models(request: Request):
         if not inst.get("allowed", True):
             continue  # no permission mark — never passed to clients (regardless of Butler mode)
         if butler_state.get("mode") == "ON" or inst["id"] in active:
-            data.append({"id": inst.get("name", inst["id"]), "object": "model"})
+            name = inst.get("name") or inst["id"]
+            if name_counts[name] > 1 or (name in instance_ids and name != inst["id"]):
+                name = inst["id"]
+            data.append({"id": name, "object": "model"})
     return JSONResponse({"object": "list", "data": data})
 
 
@@ -2699,12 +2723,30 @@ async def _v1_auth_ok(request: Request):
     return hmac.compare_digest(auth.encode("utf-8"), ("Bearer " + expected).encode("utf-8"))
 
 
+async def _proxy_model_json(url, body, headers):
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(url, json=body, headers=headers)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "Model response timed out"}, status_code=504)
+    except httpx.RequestError:
+        return JSONResponse({"error": "Cannot connect to model"}, status_code=502)
+    except ValueError:
+        return JSONResponse({"error": "Invalid JSON response from model"}, status_code=502)
+
+
 async def _v1_route_by_mode(model_name, mode):
     """Return an instance with one inflight reservation; caller releases it in finally."""
     instances = load_instances()
     active = get_active_containers()
-    inst = next((i for i in instances if (i["id"] == model_name or i.get("name") == model_name)
-                 and i.get("mode", "chat") == mode), None)
+    candidates = [i for i in instances if i.get("mode", "chat") == mode]
+    inst = next((i for i in candidates if i["id"] == model_name), None)
+    if inst is None:
+        matches = [i for i in candidates if i.get("name") == model_name]
+        if len(matches) > 1:
+            return None, JSONResponse({"error": "Ambiguous model name; use the instance ID"}, status_code=409)
+        inst = matches[0] if matches else None
     if inst is not None and not inst.get("allowed", True):
         return None, JSONResponse({"error": f"{mode} model not allowed (no permission mark)"}, status_code=403)
     if inst is None:
@@ -2736,9 +2778,7 @@ async def v1_rerank(request: Request):
     try:
         url = f"http://127.0.0.1:{inst['port']}/v1/rerank"
         hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
-        async with httpx.AsyncClient(timeout=300.0) as c:
-            r = await c.post(url, json=body, headers=hdrs)
-            return JSONResponse(content=r.json(), status_code=r.status_code)
+        return await _proxy_model_json(url, body, hdrs)
     finally:
         inflight_bump(inst["id"], -1)
 
@@ -2753,9 +2793,7 @@ async def v1_embeddings(request: Request):
     try:
         url = f"http://127.0.0.1:{inst['port']}/v1/embeddings"
         hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
-        async with httpx.AsyncClient(timeout=300.0) as c:
-            r = await c.post(url, json=body, headers=hdrs)
-            return JSONResponse(content=r.json(), status_code=r.status_code)
+        return await _proxy_model_json(url, body, hdrs)
     finally:
         inflight_bump(inst["id"], -1)
 

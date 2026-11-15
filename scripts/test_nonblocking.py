@@ -1,16 +1,16 @@
-import ast,asyncio,json,os,shutil,tempfile,threading,time
+import ast,asyncio,json,os,re,shutil,tempfile,threading,time
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
 from starlette.responses import JSONResponse
 root=Path(__file__).resolve().parents[1];source=(root/'butler.py').read_text(encoding='utf-8');tree=ast.parse(source)
-names={'_run_blocking','_serialized_model_start','api_gpus','_api_gpus_sync','_fs_path','api_fs_copy','_api_fs_copy_sync','api_autodetect','_api_autodetect_sync'}
+names={'_integer','_run_blocking','_serialized_model_start','api_gpus','_api_gpus_sync','_fs_path','api_fs_copy','_api_fs_copy_sync','api_autodetect','_api_autodetect_sync'}
 nodes=[n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name in names]
 for node in nodes:node.decorator_list=[d for d in node.decorator_list if isinstance(d,ast.Name) and d.id=='_serialized_model_start']
 class Request:
     def __init__(self,body):self.body=body
     async def json(self):return self.body
-ns=dict(asyncio=asyncio,wraps=wraps,JSONResponse=JSONResponse,Request=Request,os=os,shutil=shutil,
+ns=dict(asyncio=asyncio,wraps=wraps,JSONResponse=JSONResponse,Request=Request,os=os,re=re,shutil=shutil,
         get_gpu_list=lambda:(time.sleep(.15) or [],{}),_instances_lock=threading.RLock(),
         log=SimpleNamespace(info=lambda _:None),_model_start_lock=asyncio.Lock())
 ns['_read_json_object'] = lambda request: request.json()
@@ -32,14 +32,40 @@ async def main():
         response=await responsive(ns['api_fs_copy'](Request({'path':str(src),'dest':str(dest)})))
         assert json.loads(response.body)['success'] and (dest/'src/file.txt').read_text()=='unchanged content'
         model=Path(tmp)/'model.gguf';model.touch();inst=dict(id='a',model='model.gguf',port=123)
-        attempts=[]
-        ns.update(load_instances=lambda:[dict(inst)],inst_models_dir=lambda _:tmp,
-                  get_cached_model_params=lambda *a:{'context_length':16384},
-                  save_instances=lambda _:None)
-        def try_load(*args,**kw):attempts.append(args[2]);return False
-        ns['_llama_try_load']=try_load
-        r=await ns['api_autodetect']('a',Request({}))
-        assert not json.loads(r.body)['success'] and attempts==[16384,8192]
+        attempts = []
+        saved = []
+        applied = []
+        inflight = []
+        ns.update(load_instances=lambda: [dict(inst)], inst_models_dir=lambda _: tmp,
+                  get_cached_model_params=lambda *a: {'context_length': 16384},
+                  _build_instance_command=lambda _, **options: options,
+                  _apply_active_lora=lambda *args: applied.append(args),
+                  inflight_bump=lambda iid, delta: inflight.append(delta),
+                  mark_active=lambda _: None, save_instances=saved.extend)
+
+        def try_load(iid, port, command):
+            assert command['models_dir'] == tmp and sum(inflight) == 1
+            attempts.append(command['ctx'])
+            return next(outcomes)
+
+        ns['_llama_try_load'] = try_load
+        for reasons, contexts, success in (
+            (['oom', 'oom'], [16384, 8192], False),
+            (['timeout'], [16384], False),
+            (['failed'], [16384], False),
+            (['docker_error'], [16384], False),
+            (['oom', 'ready'], [16384, 8192], True),
+        ):
+            outcomes = iter(reasons)
+            attempts.clear()
+            response = await ns['api_autodetect']('a', Request({}))
+            result = json.loads(response.body)
+            assert result['success'] == success and attempts == contexts
+            assert [item['reason'] for item in result['attempts']] == reasons
+            if not success:
+                assert not saved and not applied
+        assert [item['ctx'] for item in saved] == [8192]
+        assert applied == [('a', 123)] and sum(inflight) == 0
     # A cancelled request must retain the shared lifecycle lock until its thread ends.
     started=threading.Event();finish=threading.Event()
     def work():started.set();finish.wait(3);return True

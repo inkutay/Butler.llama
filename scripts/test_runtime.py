@@ -57,6 +57,7 @@ async def main():
     assert peak == 1
     # Already-started instance: no Docker mutation, no second launch.
     ns['get_active_containers'] = lambda: {'same': {}}
+    ns['load_instances'] = lambda: [{'id': 'same', 'port': 123}]
     assert all(await asyncio.gather(*(ns['butler_start_instance']({'id':'same','port':123}) for _ in range(3))))
     for status in (200, 400, 429, 500):
         count['inflight'] = 1
