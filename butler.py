@@ -22,6 +22,7 @@ if os.name == "nt":
             super().__init__(*a, **kw)
     subprocess.Popen = _NoWinPopen
 
+BUTLER_VERSION = "1.0.1"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8090"))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -953,7 +954,7 @@ async def lifespan(app: FastAPI):
     finally:
         _main_loop = None
 
-app = FastAPI(title="Butler", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Butler", version=BUTLER_VERSION, lifespan=lifespan)
 
 @app.exception_handler(InputError)
 async def input_error_response(request: Request, exc: InputError):
@@ -1033,7 +1034,7 @@ async def api_status():
         "models_with_status": get_models(_current_models_dir),
         "loras": get_loras(_current_models_dir),
         "instances": instances, "active": active,
-        "butler": {"mode": butler_state["mode"]},
+        "butler": {"mode": butler_state["mode"], "version": BUTLER_VERSION},
         "sys_info": get_sys_info()
     }
     _status_cache["data"] = data
