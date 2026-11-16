@@ -22,7 +22,7 @@ if os.name == "nt":
             super().__init__(*a, **kw)
     subprocess.Popen = _NoWinPopen
 
-BUTLER_VERSION = "1.0.1"
+BUTLER_VERSION = "1.0.2"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8090"))
 STATIC_DIR = Path(__file__).parent / "static"
