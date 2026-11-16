@@ -109,22 +109,6 @@ The template binds to loopback. Add a suitably configured reverse proxy/TLS and 
 
 Edit the root `index.html`, then rerun `scripts/setup.py` to copy it into the served `static/` directory. UI changes need a browser refresh; Python changes need a Butler restart. Use **one server process/worker**: the instance locks and runtime state are process-local.
 
-Regression checks use temporary data and stubs rather than starting real models:
-
-```bash
-python scripts/test_cleanup.py
-python scripts/test_runtime.py
-python scripts/test_review.py
-python scripts/test_auth_idle.py
-python scripts/test_nonblocking.py
-python scripts/test_validation.py
-node scripts/test_i18n.js
-node scripts/test_names.js
-python scripts/test_setup.py
-```
-
-Node.js is required for JavaScript checks.
-
 ## Local configuration and Git
 
 `butler_config.example.json` and `butler_instances.example.json` show the local data format. `scripts/setup.py` is the preferred way to initialize a fresh checkout; never overwrite an existing deployment's real JSON files with the examples.
