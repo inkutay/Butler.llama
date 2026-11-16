@@ -460,7 +460,7 @@ document.addEventListener("keydown",function(e){if(e.key!=="Escape")return;const
             <span class="label-gray hf-label">UPLOADING TO:</span>
             <input type="text" class="inst-model-path mdir-input" id="modelsDir" onchange="changeModelsDir(this.value)" onblur="changeModelsDir(this.value)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
             <button class="btn-folder mdir-btn" onclick="openFsGlobal()" title="Browse folder"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#C8C864"/></svg></button>
-            <a class="hf-logo-link" href="https://huggingface.co/" target="_blank" rel="noopener" title="Открыть HuggingFace" onclick="event.stopPropagation()"><img class="hf-logo" src="/static/image/hf_logo.png" alt="HF"></a>
+            <a class="hf-logo-link" href="https://huggingface.co/" target="_blank" rel="noopener" title="Открыть HuggingFace" onclick="event.stopPropagation()"><img class="hf-logo" src="/static/image/hf-logo.svg" alt="HF"></a>
             <button class="btn-expand" onclick="event.stopPropagation();toggleModelsCard()" title="Развернуть/свернуть"><span class="chev"></span></button>
         </div>
         <div class="hf-body">
