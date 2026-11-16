@@ -18,7 +18,7 @@
 !/deploy/butler.service
 !/image/
 /image/*
-!/image/hf-logo.svg
+
 !/image/Butler_llama_01.png
 !/image/Butler_llama_02.png
 !/image/Butler_llama_03.png
