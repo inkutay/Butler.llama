@@ -131,9 +131,9 @@ globalThis.ButlerI18n.apply=apply;
         .instance-input { background: var(--bg-page); border: none; border-radius: 10px; color: #ffffff; padding: 0 12px; font-size: 15px; outline: none; height: 40px; }
         .instance-input:focus { outline: 1px solid var(--text-secondary); }
         .instance-input.input-yellow-text { color: var(--text-yellow); font-family: monospace; }
-        .instance-select, .chat-select, .inst-model-select { background: var(--bg-page); border: none; border-radius: 10px; color: #ffffff; padding: 0 15px; font-size: 15px; outline: none; height: 40px; appearance: none; cursor: pointer; color-scheme: dark; background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat: no-repeat; background-position: right 10px center; background-size: 14px; }
+        .instance-select, .chat-select, .inst-model-select, #langSelect { background: var(--bg-page); border: none; border-radius: 10px; color: #ffffff; padding: 0 15px; font-size: 15px; outline: none; height: 40px; appearance: none; cursor: pointer; color-scheme: dark; background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat: no-repeat; background-position: right 10px center; background-size: 14px; }
         .inst-model-select { color: var(--text-green); }
-        .instance-select:focus, .chat-select:focus, .inst-model-select:focus, .gpu-select-wrapper:focus-within { outline: 1px solid var(--text-secondary); }
+        .instance-select:focus, .chat-select:focus, .inst-model-select:focus, #langSelect:focus, .gpu-select-wrapper:focus-within { outline: 1px solid var(--text-secondary); }
         .gpu-list { display: flex; flex-direction: column; gap: 6px; margin-top: 0; }
         .gpu-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; font-size: 16px; font-family: monospace; }
         .gpu-id { color: var(--text-blue); } .gpu-name { color: #e0e0e0; } .gpu-mem { color: var(--text-green); } .gpu-temp { color: var(--text-blue); } .gpu-power { color: var(--text-yellow); } .gpu-uuid { color: var(--text-secondary); }
@@ -582,7 +582,7 @@ const sel=document.getElementById('chatModelSelect');
 if(sel&&(force||document.activeElement!==sel)){
 const curVal=sel.value;
 sel.innerHTML='<option value="">— select instance —</option>';
-INSTANCES.filter(inst=>(inst.mode||'chat')==='chat').forEach(inst=>{const stt=advanceState(inst.id,!!ACTIVE[inst.id],!!inst.model_ready,!!inst.model_failed);const su=STATE_UI[stt];const color=stt==='on'?'var(--text-green)':(stt==='failed'?'var(--text-danger)':(stt==='off'?'var(--text-secondary)':'var(--text-yellow)'));const label=su.lbl;if(inst.allowed!==false&&(BUTLER_MODE==='ON'||!!ACTIVE[inst.id])){sel.innerHTML+='<option value="'+inst.id+'" style="color:'+color+'"'+(inst.id===curVal?' selected':'')+'>'+escapeHtml(inst.name||inst.id)+' ['+label+']</option>';}});
+INSTANCES.filter(inst=>(inst.mode||'chat')==='chat').forEach(inst=>{const stt=advanceState(inst.id,!!ACTIVE[inst.id],!!inst.model_ready,!!inst.model_failed,!!inst.stopping);const su=STATE_UI[stt];const color=stt==='on'?'var(--text-green)':(stt==='failed'?'var(--text-danger)':(stt==='off'?'var(--text-secondary)':'var(--text-yellow)'));const label=su.lbl;if(inst.allowed!==false&&(BUTLER_MODE==='ON'||!!ACTIVE[inst.id])){sel.innerHTML+='<option value="'+inst.id+'" style="color:'+color+'"'+(inst.id===curVal?' selected':'')+'>'+escapeHtml(inst.name||inst.id)+' ['+label+']</option>';}});
 updateChatColor();}
 }
 
@@ -591,7 +591,7 @@ const gel=document.getElementById('gpuList');
 if(SYSTEM_GPUS.length)gel.innerHTML=SYSTEM_GPUS.map(g=>{const m=metrics[g.uuid]||{},mem=m.vram_used||'-- / -- MiB',temp=m.temp!=null?m.temp+'C':'--C',pw=m.power!=null?m.power+' W':'-- W';return `<div class="gpu-row"><span class="gpu-id">${g.idx}</span><span class="gpu-name">${g.name}</span><span class="gpu-mem">${mem}</span><span class="gpu-temp ${m.temp!=null?tempCls(m.temp):''}">${temp}</span><span class="gpu-power">${pw}</span><span class="gpu-uuid">${g.uuid||'--'}</span></div>`;}).join('');
 refreshChatModels();
 INSTANCES.forEach(inst=>{const card=document.querySelector(`.instance-card[data-inst="${inst.id}"]`);if(!card)return;const indices=(inst.gpu_indices||[]).filter(i=>i!=='__select__');let tv=0,tf=0,tp=0,tpf=false;indices.forEach(idx=>{const gpu=SYSTEM_GPUS.find(g=>g.idx===idx);if(gpu){tv+=gpu.vram_total||0;const gm=metrics[gpu.uuid];if(gm&&gm.vram_free!=null)tf+=gm.vram_free;if(gm&&gm.power!=null){tp+=gm.power;tpf=true;}const row=card.querySelector(`.inst-gpu-row[data-gpu="${idx}"]`);if(row){const memEl=row.querySelector('.inst-gpu-mem');if(memEl)memEl.textContent=gm&&gm.vram_used?gm.vram_used:'-- / -- MiB';const tempEl=row.querySelector('.inst-gpu-temp');if(tempEl){tempEl.textContent=gm&&gm.temp!=null?gm.temp+'C':'--C';tempEl.className='inst-gpu-temp'+(gm&&gm.temp!=null?' '+tempCls(gm.temp):'');}const uuidEl=row.querySelector('.inst-gpu-uuid');if(uuidEl)uuidEl.textContent=shortUuid(gpu.uuid);}}});if(tv){const el=document.getElementById('vram_'+inst.id);if(el)el.textContent=Math.round(tv/1024)+' GB';const fel=document.getElementById('freevram_'+inst.id);if(fel)fel.textContent=tf?Math.round(tf/1024)+' GB':'--';}
-const pwrEl=document.getElementById('power_'+inst.id);if(pwrEl)pwrEl.textContent=(ACTIVE[inst.id]&&tpf)?Math.round(tp)+' W':'--';const freeRamEl=document.getElementById('freeram_'+inst.id);if(freeRamEl&&window._lastStatus&&window._lastStatus.sys_info&&window._lastStatus.sys_info.ram_free)freeRamEl.textContent=Math.round(window._lastStatus.sys_info.ram_free/1024)+' GB';const isActive=!!ACTIVE[inst.id];const stt=advanceState(inst.id,isActive,!!inst.model_ready,!!inst.model_failed);const su=STATE_UI[stt];const canStop=isActive||(_is[inst.id]&&_is[inst.id].pending);const toggleBtn=card.querySelector('.btn-inst-toggle');if(toggleBtn){toggleBtn.textContent=su.lbl;toggleBtn.style.backgroundColor=su.bg;toggleBtn.className='btn-inst-toggle'+(su.cls?' '+su.cls:'');toggleBtn.title=instTitle(stt);}const startBtn=card.querySelector('.btn-inst-start');if(startBtn){startBtn.textContent=canStop?'STOP':'START';startBtn.style.backgroundColor=(stt==='failed')?'#FF0000':(canStop?'#647864':'#009600');}});}
+const pwrEl=document.getElementById('power_'+inst.id);if(pwrEl)pwrEl.textContent=(ACTIVE[inst.id]&&tpf)?Math.round(tp)+' W':'--';const freeRamEl=document.getElementById('freeram_'+inst.id);if(freeRamEl&&window._lastStatus&&window._lastStatus.sys_info&&window._lastStatus.sys_info.ram_free)freeRamEl.textContent=Math.round(window._lastStatus.sys_info.ram_free/1024)+' GB';const isActive=!!ACTIVE[inst.id];const stt=advanceState(inst.id,isActive,!!inst.model_ready,!!inst.model_failed,!!inst.stopping);const su=STATE_UI[stt];const canStop=stt==='stopping'||isActive||(_is[inst.id]&&_is[inst.id].pending);const toggleBtn=card.querySelector('.btn-inst-toggle');if(toggleBtn){toggleBtn.textContent=su.lbl;toggleBtn.style.backgroundColor=su.bg;toggleBtn.className='btn-inst-toggle'+(su.cls?' '+su.cls:'');toggleBtn.title=instTitle(stt);}const startBtn=card.querySelector('.btn-inst-start');if(startBtn){startBtn.textContent=canStop?'STOP':'START';startBtn.style.backgroundColor=(stt==='failed')?'#FF0000':(canStop?'#647864':'#009600');}});}
 function _cardGpuRows(card){return card?[...card.querySelectorAll('.inst-gpu-row[data-gpu]')].filter(r=>r.getAttribute('data-gpu')!=='__select__'):[];}
 function _cardGpuCount(card){return Math.max(1,_cardGpuRows(card).length);}
 function _cardVramGb(card){const st=window._lastStatus;const gpus=(st&&st.gpus)?st.gpus:SYSTEM_GPUS;const rows=_cardGpuRows(card);if(!rows.length)return 0;let tot=0,found=false;rows.forEach(r=>{const gpu=gpus.find(g=>g.idx===r.getAttribute('data-gpu'));if(gpu&&gpu.vram_total!=null){tot+=gpu.vram_total;found=true;}});return found?Math.max(1,Math.round(tot/rows.length/1024)):0;}
@@ -630,8 +630,8 @@ const nglGpu=parseInt(card.querySelector('input.inst-ngl')?.value)||0;
 const nglCpu=parseInt(card.querySelector('.inst-ngl-cpu')?.textContent)||0;
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
 const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
-const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
-const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
+const flash=card.querySelector('input[type="checkbox"][data-param="flash"]')?.checked||false;
+const ram=card.querySelector('input[type="checkbox"][data-param="ram"]')?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 const numGpus=_cardGpuCount(card);
 const vramGb=_cardVramGb(card);
@@ -669,7 +669,7 @@ if(ramEl)ramEl.textContent=ramModel.toFixed(1)+' GB';
 }).catch(()=>{});}
 
 const pendingCardSaves = new Map();
-const cardNumberDefaults = {ngl:99, ctx:16384, parallel:1, mtp_nmax:0};
+const cardNumberDefaults = {ngl:99, ctx:16384, parallel:1, mtp_nmax:0, moe_cache_mib:0};
 
 function saveParams(id, control){
     const field = control.dataset.param;
@@ -727,18 +727,28 @@ function setInstTab(m){_instTab=m;try{localStorage.setItem('butler_insttab',m);}
 // comes from user intent + transitions; FAILED = container appeared then died during a load (OOM etc.).
 const _is={};   // id -> {intent:'up'|'down'|null, pending, sawRunning, failed, prevReady}
 const _state={}; // id -> state string
-const STATE_UI={off:{lbl:'OFF',bg:'#647864',cls:''},loading:{lbl:'LOAD',bg:'#C8C864',cls:'tgl-loading'},on:{lbl:'ON',bg:'#009600',cls:''},stopping:{lbl:'STOP',bg:'#E08030',cls:'tgl-stopping'},failed:{lbl:'FAIL',bg:'#FF0000',cls:'tgl-failed'}};
-function advanceState(id,act,ready,failed){
+const pendingStops=new Map();
+const STATE_UI={off:{lbl:'OFF',bg:'#647864',cls:''},loading:{lbl:'LOAD',bg:'#C8C864',cls:'tgl-loading'},on:{lbl:'ON',bg:'#009600',cls:''},stopping:{lbl:'STOP',bg:'#C8C864',cls:'tgl-stopping'},failed:{lbl:'FAIL',bg:'#FF0000',cls:'tgl-failed'}};
+function advanceState(id,act,ready,failed,beStop){
   // failed = backend ground truth (model_failed: container exited with non-zero code = crash).
   // st.failed is STICKY: once a crash is known (by us or the backend) it stays red until a
   // successful load or a clean stop. A new attempt (retry) ignores the stale corpse.
   let st=_is[id]||(_is[id]={intent:null,pending:false,sawRunning:false,failed:false,prevReady:false});
+  if(beStop||pendingStops.has(id)){st.sawRunning=true;_state[id]='stopping';return _state[id];}
   const attempting=st.intent==='up'&&st.pending;
+  if(st.intent==='down'){
+    if(act){
+      st.sawRunning=true;
+      _state[id]='stopping';
+      return _state[id];
+    }
+    st.pending=false;st.sawRunning=false;st.prevReady=false;st.intent=null;
+  }
   if(failed&&!attempting) st.failed=true;
   if(ready){st.pending=false;st.sawRunning=false;st.prevReady=true;st.intent=null;st.failed=false;_state[id]='on';}
   else if(st.failed){_state[id]='failed';}
   else if(act){st.sawRunning=true;
-    _state[id]=(st.intent==='down')?'stopping':(st.prevReady?'stopping':'loading');}
+    _state[id]=st.prevReady?'stopping':'loading';}
   else{
     _state[id]=attempting?'loading':'off';
     if(!attempting){st.pending=false;st.sawRunning=false;st.prevReady=false;st.intent=null;}}
@@ -754,7 +764,7 @@ function renderInstances(metrics){
 const c=document.getElementById('instanceContainer');const instList=INSTANCES.filter(i=>(i.mode||'chat')===_instTab);if(!instList.length){c.innerHTML='<p style="text-align:center;color:var(--text-secondary);padding:30px">No instances. Click ADD INSTANCE.</p>';return;}
 const hw=SYSTEM_GPUS.map(g=>g.idx);
 c.innerHTML=instList.map((inst,idx)=>{
-const act=!!ACTIVE[inst.id],stt=advanceState(inst.id,act,!!inst.model_ready,!!inst.model_failed),su=STATE_UI[stt],canStop=act||(_is[inst.id]&&_is[inst.id].pending),indices=inst.gpu_indices||[],allReal=indices.filter(i=>i!=='__select__'),canAdd=allReal.length<hw.length;let _pows=0,_powsf=false;allReal.forEach(_ix=>{const _g=SYSTEM_GPUS.find(g=>g.idx===_ix);const _m=_g&&metrics?metrics[_g.uuid]:null;if(_m&&_m.power!=null){_pows+=_m.power;_powsf=true;}});
+const act=!!ACTIVE[inst.id],stt=advanceState(inst.id,act,!!inst.model_ready,!!inst.model_failed,!!inst.stopping),su=STATE_UI[stt],canStop=stt==='stopping'||act||(_is[inst.id]&&_is[inst.id].pending),indices=inst.gpu_indices||[],allReal=indices.filter(i=>i!=='__select__'),canAdd=allReal.length<hw.length;let _pows=0,_powsf=false;allReal.forEach(_ix=>{const _g=SYSTEM_GPUS.find(g=>g.idx===_ix);const _m=_g&&metrics?metrics[_g.uuid]:null;if(_m&&_m.power!=null){_pows+=_m.power;_powsf=true;}});
 const tglLbl=su.lbl,tglBg=su.bg,sLbl=canStop?'STOP':'START',sBg=(stt==='failed')?'#FF0000':(canStop?'#647864':'#009600');
 const realGpuRows=indices.filter(idx=>idx!=='__select__').map(idx=>{const gpu=SYSTEM_GPUS.find(g=>g.idx===idx);const gm=gpu&&metrics?metrics[gpu.uuid]:null;const mem=gm&&gm.vram_used?gm.vram_used:'-- / -- MiB';const temp=gm&&gm.temp!=null?gm.temp+'C':'--C';const uuid=shortUuid(gpu?gpu.uuid:null);const name=gpu?gpu.name:'No video card';return `<div class="inst-gpu-row" data-gpu="${idx}"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">${idx}</span><span class="gpu-name">${name}</span></div><select class="native-select-hidden" onchange="changeGpu('${inst.id}','${idx}',this)"><option value="">— select —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(hi!==idx&&allReal.includes(hi))return '';return `<option value="${hi}" ${hi===idx?'selected':''}>${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">${mem}</span><span class="inst-gpu-temp ${gm&&gm.temp!=null?tempCls(gm.temp):''}">${temp}</span><span class="inst-gpu-uuid">${uuid}</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
 const placeholderRows=indices.filter(idx=>idx==='__select__').map(idx=>{return `<div class="inst-gpu-row" data-gpu="__select__"><div class="gpu-select-wrapper"><div class="gpu-select-content"><span class="gpu-id">--</span><span class="gpu-name" style="color:var(--text-yellow);font-style:italic">select video card</span></div><select class="native-select-hidden" onchange="changeGpu('${inst.id}','__select__',this)"><option value="">— select video card —</option>${hw.map(hi=>{const hg=SYSTEM_GPUS.find(g=>g.idx===hi);if(allReal.includes(hi))return '';return `<option value="${hi}">${hi} - ${hg?hg.name:'?'}</option>`;}).join('')}</select></div><span class="inst-gpu-mem">0 / 0 MiB</span><span class="inst-gpu-temp">0C</span><span class="inst-gpu-uuid">no video card</span><button class="btn-gpu-delete" onclick="delGpu('${inst.id}','${idx}')" title="Remove"><svg width="16" height="16" viewBox="0 0 15 15"><polygon fill="red" points="1.19,0.5 7,6.31 12.81,0.5 14.5,2.19 8.69,8 14.5,13.81 12.81,15.5 7,9.69 1.19,15.5 -0.5,13.81 5.31,8 -0.5,2.19 "/></svg></button></div>`;}).join('');
@@ -780,7 +790,7 @@ return `<section class="instance-card" data-inst="${inst.id}">
 <div class="inst-header-actions">
 <span class="pp-badge ${inst.slots&&inst.slots.active>0&&inst.slots.active<inst.slots.total?'pp-busy':''} ${inst.slots&&inst.slots.active>0&&inst.slots.active>=inst.slots.total&&!(inst.slots.queued>0)?'pp-full':''} ${inst.slots&&inst.slots.queued>0?'pp-queue':''}" id="pp_${inst.id}">${inst.slots?('P: ['+inst.slots.active+'/'+inst.slots.total+']'+(inst.slots.queued>0?' +'+inst.slots.queued:'')):'P: [--]'}</span>
 <button class="btn-allow ${inst.allowed===false?'allow-off':'allow-on'}" onclick="event.stopPropagation();toggleAllow('${inst.id}')" title="${inst.allowed===false?'Метка снята: модель НЕ передаётся клиенту (ни в /v1/models, ни по API). Клик — разрешить.':'Метка стоит: модель передаётся клиенту (Butler ON — всегда, OFF — если загружена). Клик — снять.'}">✓</button>
-<button class="btn-inst-toggle${su.cls?' '+su.cls:''}" onclick="event.stopPropagation();toggleInstOnOff('${inst.id}')" style="background-color:${tglBg}" title="${instTitle(stt)}">${tglLbl}</button>
+<button class="btn-inst-toggle${su.cls?' '+su.cls:''}" data-no-i18n onclick="event.stopPropagation();toggleInstOnOff('${inst.id}')" style="background-color:${tglBg}" title="${instTitle(stt)}">${tglLbl}</button>
 <button class="btn-exempt ${inst.idle_exempt?'mark-on':'mark-off'}" onclick="event.stopPropagation();toggleExempt('${inst.id}')" title="${inst.idle_exempt?'Закрытый замок: IDLE OFF на этот инстанс НЕ действует — не выгружается по таймауту. Клик — открыть (разрешить выгрузку).':'Открытый замок: IDLE OFF действует — инстанс выгружается по таймауту. Клик — закрыть (исключить из idle-unload).'}">${inst.idle_exempt?ICON_LOCK:ICON_UNLOCK}</button>
 <button class="btn-header-delete" onclick="event.stopPropagation();deleteInst('${inst.id}')" title="Delete"><svg width="20" height="24" viewBox="0 0 20 24"><path fill="#C8C864" fill-rule="evenodd" d="M5.46 24l9.08 0c0.82,0 1.38,-0.71 1.5,-1.56l2.24 -16.01 -16.56 0 2.24 16.01c0.12,0.85 0.68,1.56 1.5,1.56zm-4.46 -21.52l5.1 0c0.47,-1.44 2.35,-2.48 3.9,-2.48 1.55,0 3.43,1.04 3.9,2.48l5.1 0c0.55,0 1,0.47 1,1.04 0,0.57 -0.45,1.04 -1,1.04l-18 0c-0.55,0 -1,-0.47 -1,-1.04 0,-0.57 0.45,-1.04 1,-1.04zm6.97 0l4.06 0c-0.4,-0.73 -1.16,-1.04 -2.03,-1.04 -0.87,0 -1.63,0.31 -2.03,1.04zm2.03 5.72c0.49,0 0.89,0.41 0.89,0.91l0 12.11c0,0.51 -0.4,0.92 -0.89,0.92 -0.49,0 -0.89,-0.41 -0.89,-0.92l0 -12.11c0,-0.5 0.4,-0.91 0.89,-0.91zm-4.29 0.02c0.49,-0.03 0.91,0.36 0.94,0.86l0.67 12.09c0.03,0.51 -0.35,0.94 -0.84,0.97 -0.48,0.03 -0.91,-0.36 -0.93,-0.86l-0.67 -12.09c-0.03,-0.51 0.35,-0.94 0.83,-0.97zm8.58 0c-0.49,-0.03 -0.91,0.36 -0.94,0.86l-0.67 12.09c-0.03,0.51 0.35,0.94 0.84,0.97 0.48,0.03 0.91,-0.36 0.93,-0.86l0.67 -12.09c0.03,-0.51 -0.35,-0.94 -0.83,-0.97z"/></svg></button>
 <div class="btn-header-move"><button class="btn-move" onclick="event.stopPropagation();moveInst('${inst.id}','up')" title="Переместить вверх" ${idx===0?'disabled':''}>▲</button><button class="btn-move" onclick="event.stopPropagation();moveInst('${inst.id}','down')" title="Переместить вниз" ${idx===INSTANCES.length-1?'disabled':''}>▼</button></div>
@@ -804,6 +814,9 @@ ${isChat?`<div class="inst-model-row">
 </div>
 <div class="inst-model-row">
 <span class="label-gray hf-label">MTP:</span><select class="inst-model-select inst-mtp" data-param="mtp" onchange="saveParams('${inst.id}',this)" onclick="event.stopPropagation()" title="MTP (multi-token prediction) для speculative decoding: built-in = модуль внутри файла модели (только --spec-type draft-mtp); файл = отдельная голова (--spec-draft-model). + --spec-draft-n-max из поля n:"><option value="">— none —</option><option value="builtin" ${inst.mtp==='builtin'?'selected':''}>⚡ built-in (в файле модели)</option>${mtpList.map(m=>`<option value="${escapeHtml(m.name)}" ${inst.mtp===m.name?'selected':''}>${escapeHtml(m.name)} (${m.size_gb} GB)</option>`).join('')}</select><span class="label-gray" title="Макс. токенов драфта за шаг (--spec-draft-n-max), 3 = дефолт llama.cpp">n:</span><input type="number" min="1" max="8" class="instance-input inst-mtpnmax" style="width:62px" value="${inst.mtp_nmax??3}" data-param="mtp_nmax" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
+</div>
+<div class="inst-model-row">
+<span class="label-gray hf-label">MOE CACHE:</span><label class="inst-checkbox-group" title="Размер кэша в VRAM для экспертов MoE, размещённых в RAM. Требуется сборка llama.cpp с поддержкой --moe-cache-mib." onclick="event.stopPropagation()"><input type="checkbox" ${inst.moe_cache?'checked':''} data-param="moe_cache" onchange="saveParams('${inst.id}',this)"><span class="custom-check"></span></label><span class="label-gray" title="Размер кэша экспертов, MiB (--moe-cache-mib). 0 или галка ВЫКЛ = флаг не передаётся">MiB:</span><input type="number" min="0" step="1" class="instance-input inst-moecache" style="width:80px" value="${inst.moe_cache_mib??0}" data-param="moe_cache_mib" onchange="saveParams('${inst.id}',this)" onkeydown="fieldEnter(event)" onclick="event.stopPropagation()">
 </div>`:''}
 ${isChat?`<div class="inst-model-row">
 <span class="label-gray hf-label">LORA:</span><select class="inst-model-select inst-lora-select" onchange="addLoraTo('${inst.id}',this.value)" onclick="event.stopPropagation()"><option value="">— add lora —</option>${lList.filter(l=>!(inst.loras||[]).includes(l.name)).map(l=>`<option value="${escapeHtml(l.name)}">${escapeHtml(l.name)} (${l.size_mb} MB)</option>`).join('')}</select>
@@ -870,17 +883,31 @@ if(!p.trim())return;
 try{const result=await apiPatch('/api/instances/'+id+'/port',{port:p.trim()});if(!result.success)throw new Error(result.message);}
 catch(e){toast(e.message,true);_mutate=true;await loadStatus();}
 }
+function requestInstanceStop(id){
+    if(pendingStops.has(id))return pendingStops.get(id);
+    setInstIntent(id,'down');
+    const request=apiPost('/api/unload',{instance:id}).catch(error=>{
+        _is[id].intent=null;
+        throw error;
+    }).finally(()=>{
+        pendingStops.delete(id);
+        updateMetrics(_lastMetrics||{});
+    });
+    pendingStops.set(id,request);
+    updateMetrics(_lastMetrics||{});
+    return request;
+}
 async function toggleInstOnOff(id){await instStartStop(id);}
 async function instStartStop(id){
 const inst=INSTANCES.find(i=>i.id===id);if(!inst)return;
 const lang=window._lang||'ru';
 const t=k=>LANG[lang][k]||LANG.ru[k]||k;
+if(pendingStops.has(id)||inst.stopping)return;
 if(!!ACTIVE[id]||(_is[id]&&_is[id].pending)){
-setInstIntent(id,'down');
 try{
 const card=document.querySelector(`.instance-card[data-inst="${id}"]`);
 const model=inst.model||'';
-const r=await apiPost('/api/unload',{instance:id});
+const r=await requestInstanceStop(id);
 toast(r.message||'Stopped');
 _mutate=true;await loadStatus();
 // Write to chat only if chat card is already open
@@ -898,8 +925,8 @@ if(!model){toast('Select model first',true);return;}
 const ngl=Number(card.querySelector('.inst-ngl')?.value ?? 99);
 const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
-const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
-const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
+const flash=card.querySelector('input[type="checkbox"][data-param="flash"]')?.checked||false;
+const ram=card.querySelector('input[type="checkbox"][data-param="ram"]')?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 // Show chat + loading progress
 window.scrollTo({top:0,behavior:'smooth'});
@@ -936,7 +963,7 @@ const matches=(other.gpu_indices||[]).filter(i=>i!=='__select__').some(gi=>gpuIn
 if(matches){
 output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>';
 output.scrollTop=output.scrollHeight;
-try{await apiPost('/api/unload',{instance:other.id});}catch(e){}}}
+try{await requestInstanceStop(other.id);}catch(e){}}}
 await loadStatus();
 } else {
 output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusy')+' '+escapeHtml(busyGpus.join(', '))+'</div>';
@@ -1283,7 +1310,7 @@ const otherGpus=(other.gpu_indices||[]).filter(i=>i!=='__select__');
 if(otherGpus.some(gi=>busyGpus.includes(gi))){
 output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>';
 output.scrollTop=output.scrollHeight;
-try{await apiPost('/api/unload',{instance:other.id});}catch(e){}}}
+try{await requestInstanceStop(other.id);}catch(e){}}}
 if(busyGpus.length)await loadStatus();
 // Start
 if(pendingCardSaves.has(id))await pendingCardSaves.get(id);
@@ -1294,8 +1321,8 @@ if(!model)return false;
 const ngl=Number(card.querySelector('.inst-ngl')?.value ?? 99);
 const ctx=Number(card.querySelector('.inst-ctx')?.value ?? 16384);
 const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
-const flash=card.querySelector('.inst-checkbox-group input[type="checkbox"]')?.checked||false;
-const ram=card.querySelectorAll('.inst-checkbox-group input[type="checkbox"]')[1]?.checked||false;
+const flash=card.querySelector('input[type="checkbox"][data-param="flash"]')?.checked||false;
+const ram=card.querySelector('input[type="checkbox"][data-param="ram"]')?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStarting')+' <b>'+instName+'</b></div>';
 const modelName=(model||'').replace(/^.*[/\\]/,'');
