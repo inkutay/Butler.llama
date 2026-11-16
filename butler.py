@@ -95,7 +95,7 @@ def _gpu_value(value):
 def _validate_control_payload(body):
     body = dict(body)
     for key, minimum in {"ctx": 0, "ctx_size": 0, "max_ctx": 0, "parallel": 1,
-                         "ngl": 0, "mtp_nmax": 0, "idle_timeout_minutes": 0, "num_gpus": 1}.items():
+                         "ngl": 0, "mtp_nmax": 0, "moe_cache_mib": 0, "idle_timeout_minutes": 0, "num_gpus": 1}.items():
         if key in body:
             body[key] = _integer(body[key], key, minimum)
     for key in ("name", "model", "mmproj", "mtp", "models_dir", "docker_image", "path", "dest",
@@ -103,7 +103,7 @@ def _validate_control_payload(body):
                 "username", "password", "current_password", "new_password", "refresh_token", "instance"):
         if key in body and not isinstance(body[key], str):
             raise InputError(f"{key}: expected a string")
-    for key in ("flash", "ram", "flash_attn", "ram_kv", "allowed", "idle_exempt", "idle_enabled"):
+    for key in ("flash", "ram", "flash_attn", "ram_kv", "allowed", "idle_exempt", "idle_enabled", "moe_cache"):
         if key in body and not isinstance(body[key], bool):
             raise InputError(f"{key}: expected true or false")
     if "free_vram_gb" in body:
@@ -764,7 +764,7 @@ def get_gpu_list():
                 try: pw = float(parts[4].replace(" W", "").strip())
                 except: pw = None
                 uuid = gpus[int(idx)]["uuid"] if int(idx) < len(gpus) else f"GPU-{idx}"
-                metrics[uuid] = {"vram_used": f"{used} / {gpus[int(idx)]['vram_total']} MiB", "vram_free": int(free), "temp": int(temp), "power": pw}
+                metrics[uuid] = {"vram_used": f"{used} / {gpus[int(idx)]['vram_total']} MiB", "vram_free": int(float(free)), "temp": int(float(temp)), "power": pw}
     except: pass
     return gpus, metrics
 
@@ -844,26 +844,43 @@ def _wait_gpu_free(gpu_nums, timeout=45, threshold_mib=2048):
         time.sleep(2)
     return False
 
+_stopping_lock = threading.Lock()
+_stopping = {}
+
+def _set_stopping(name, on):
+    iid = name[len("llama-inst-"):] if name.startswith("llama-inst-") else name
+    with _stopping_lock:
+        if on:
+            _stopping[iid] = _stopping.get(iid, 0) + 1
+        elif _stopping.get(iid, 0) > 1:
+            _stopping[iid] -= 1
+        else:
+            _stopping.pop(iid, None)
+
 def _stop_rm_container(name):
     """Best-effort docker stop+rm. Never raises. Kill-fallback on stop timeout.
     Returns True if the container was actually stopped (stop exit 0 / kill attempted)."""
-    stopped = False
+    _set_stopping(name, True)
     try:
-        r = subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
-        stopped = (r.returncode == 0)
-    except subprocess.TimeoutExpired:
+        stopped = False
         try:
-            subprocess.run(["docker", "kill", name], capture_output=True, timeout=10)
-            stopped = True
+            r = subprocess.run(["docker", "stop", name], capture_output=True, timeout=20)
+            stopped = (r.returncode == 0)
+        except subprocess.TimeoutExpired:
+            try:
+                subprocess.run(["docker", "kill", name], capture_output=True, timeout=10)
+                stopped = True
+            except Exception:
+                pass
         except Exception:
             pass
-    except Exception:
-        pass
-    try:
-        subprocess.run(["docker", "rm", name], capture_output=True, timeout=15)
-    except Exception:
-        pass
-    return stopped
+        try:
+            subprocess.run(["docker", "rm", name], capture_output=True, timeout=15)
+        except Exception:
+            pass
+        return stopped
+    finally:
+        _set_stopping(name, False)
 
 # ======================== API (своё, без :8090) ========================
 
@@ -987,6 +1004,7 @@ async def api_status():
         # model_failed = container exists but exited with non-zero code (crash/OOM); clean stop = exit 0 / rm'd
         inst["model_ready"] = bool(ready.get(inst.get("id")))
         inst["model_failed"] = bool(failed.get(inst.get("id")))
+        inst["stopping"] = bool(inst.get("id") in _stopping)
         live = 0.0
         if inst.get("id") in active:
             snapshot = _bg_cache.get("slots", {}).get(inst.get("id"))
@@ -1495,7 +1513,7 @@ async def api_save_params(inst_id: str, request: Request):
         insts = load_instances()
         for x in insts:
             if x["id"] == inst_id:
-                for k in ("model", "ngl", "ctx", "flash", "ram", "kvq", "parallel", "mmproj", "mtp", "mtp_nmax", "models_dir", "docker_image"):
+                for k in ("model", "ngl", "ctx", "flash", "ram", "kvq", "parallel", "mmproj", "mtp", "mtp_nmax", "moe_cache", "moe_cache_mib", "models_dir", "docker_image"):
                     if k in body: x[k] = body[k]
                 if "ngl" in body: x["ngl"] = body["ngl"]
                 if "ctx" in body: x["ctx"] = body["ctx"]
@@ -1521,6 +1539,17 @@ def mtp_flags(mtp, nmax=0):
     except Exception:
         pass
     return f
+
+def moe_cache_flags(inst):
+    if not inst or not inst.get("moe_cache"):
+        return []
+    try:
+        mib = int(inst.get("moe_cache_mib", 0))
+    except (TypeError, ValueError):
+        return []
+    if mib < 1:
+        return []
+    return ["--moe-cache-mib", str(mib)]
 
 def _llama_try_load(iid, port, command, wait_s=120):
     """Return the trial outcome and keep the container only if ready."""
@@ -1732,6 +1761,8 @@ def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kv
         cmd.extend(["--no-warmup", "--reranking", "--pooling", "rank", "--ubatch-size", bs])
     if mn_proj: cmd.extend(["--mmproj", f"/models/{mn_proj}"])
     if mn_mtp: cmd.extend(mtp_flags(mn_mtp, n.get("mtp_nmax", 0)))
+    margs = moe_cache_flags(n)
+    if margs: cmd.extend(margs)
     largs = lora_docker_args(n)
     if largs: cmd.extend(largs)
     return cmd
@@ -2073,6 +2104,14 @@ def _docker_image_exists(img):
     except Exception:
         return False
 
+def _docker_image_version(img):
+    try:
+        r = subprocess.run(["docker", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.version"}}', img], capture_output=True, timeout=5, text=True)
+        v = (r.stdout or "").strip()
+        return v or None
+    except Exception:
+        return None
+
 @app.get("/api/runtimes")
 async def api_runtimes():
     runtimes = []
@@ -2082,7 +2121,11 @@ async def api_runtimes():
         if not image or image in seen:
             return
         seen.add(image)
-        runtimes.append({"image": image, "label": (label or "").strip() or image, "default": bool(default)})
+        lbl = (label or "").strip() or image
+        v = _docker_image_version(image)
+        if v:
+            lbl = f"{lbl} — {v}"
+        runtimes.append({"image": image, "label": lbl, "default": bool(default)})
     add(DOCKER_IMAGE, "llama.cpp (standard)", default=True)
     for r in (load_config().get("runtimes") or []):
         if isinstance(r, dict):
