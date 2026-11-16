@@ -6,5 +6,6 @@
   "auth_user": "admin",
   "auth_pass": "CHOOSE_YOUR_OWN_PASSWORD",
   "idle_enabled": false,
-  "idle_timeout_minutes": 30
+  "idle_timeout_minutes": 30,
+  "runtimes": []
 }

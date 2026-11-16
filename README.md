@@ -51,6 +51,22 @@ Put your `.gguf` files in the generated `models/` directory, or choose another m
 
 The pinned Python versions describe the development environment, not a complete transitive lockfile. A fresh Linux installation should be verified with `pip check`; Docker, drivers and model compatibility must also be checked on the target machine.
 
+## Runtime images (llama.cpp versions and forks)
+
+Butler launches models inside llama.cpp Docker containers and never pulls images by itself.
+
+- **Default runtime:** `ghcr.io/ggml-org/llama.cpp:server-cuda` (pulled in Quick start above).
+- **Auto-detection:** every llama.cpp-family image already present locally (`docker images`) shows up in the instance **RUNTIME** dropdown — pin a specific build with `docker pull <image>:<tag>` and it becomes selectable.
+- **Friendly names (optional):** add a `runtimes` list to `butler_config.json` to give images readable labels:
+
+  ```json
+  "runtimes": [
+    {"image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b12500", "label": "llama.cpp b12500 (pinned)"}
+  ]
+  ```
+
+- **Per instance:** each instance keeps its own runtime choice. Before launch Butler verifies the image exists locally and otherwise reports `Runtime image not found locally`.
+
 ## Butler ON and OFF
 
 **ON:** permitted models can be loaded automatically when requested. A chat model may stop conflicting chat instances that share its GPUs. Small embeddings/reranking instances share GPUs with chat models.
