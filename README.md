@@ -6,13 +6,13 @@ Load a model when a client asks for it, release conflicting chat models from the
 
 ![Butler](image/butler_logo.svg)
 
-**Interface screenshots (v1.0.1):**
+**Interface screenshots (v1.0.2):**
 
-![Screenshot 1](image/Butler_llama_01.png)
+![Screenshot 1](image/Butler_llama_01_1-0-2.png)
 
-![Screenshot 2](image/Butler_llama_02.png)
+![Screenshot 2](image/Butler_llama_02_1-0-2.png)
 
-![Screenshot 3](image/Butler_llama_03.png)
+![Screenshot 3](image/Butler_llama_03_1-0-2.png)
 
 ## Features
 
