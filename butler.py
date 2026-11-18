@@ -103,7 +103,7 @@ def _validate_control_payload(body):
                 "username", "password", "current_password", "new_password", "refresh_token", "instance"):
         if key in body and not isinstance(body[key], str):
             raise InputError(f"{key}: expected a string")
-    for key in ("flash", "ram", "flash_attn", "ram_kv", "allowed", "idle_exempt", "idle_enabled", "moe_cache"):
+    for key in ("flash", "ram", "flash_attn", "ram_kv", "allowed", "idle_exempt", "idle_enabled", "moe_cpu", "moe_cache"):
         if key in body and not isinstance(body[key], bool):
             raise InputError(f"{key}: expected true or false")
     if "free_vram_gb" in body:
@@ -1513,7 +1513,7 @@ async def api_save_params(inst_id: str, request: Request):
         insts = load_instances()
         for x in insts:
             if x["id"] == inst_id:
-                for k in ("model", "ngl", "ctx", "flash", "ram", "kvq", "parallel", "mmproj", "mtp", "mtp_nmax", "moe_cache", "moe_cache_mib", "models_dir", "docker_image"):
+                for k in ("model", "ngl", "ctx", "flash", "ram", "kvq", "parallel", "mmproj", "mtp", "mtp_nmax", "moe_cpu", "moe_cache", "moe_cache_mib", "models_dir", "docker_image"):
                     if k in body: x[k] = body[k]
                 if "ngl" in body: x["ngl"] = body["ngl"]
                 if "ctx" in body: x["ctx"] = body["ctx"]
@@ -1540,16 +1540,20 @@ def mtp_flags(mtp, nmax=0):
         pass
     return f
 
-def moe_cache_flags(inst):
+def moe_flags(inst):
+    args = []
+    if inst and inst.get("moe_cpu"):
+        args.append("--cpu-moe")
     if not inst or not inst.get("moe_cache"):
-        return []
+        return args
     try:
         mib = int(inst.get("moe_cache_mib", 0))
     except (TypeError, ValueError):
-        return []
+        return args
     if mib < 1:
-        return []
-    return ["--moe-cache-mib", str(mib)]
+        return args
+    args.extend(["--moe-cache-mib", str(mib)])
+    return args
 
 def _llama_try_load(iid, port, command, wait_s=120):
     """Return the trial outcome and keep the container only if ready."""
@@ -1761,7 +1765,7 @@ def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kv
         cmd.extend(["--no-warmup", "--reranking", "--pooling", "rank", "--ubatch-size", bs])
     if mn_proj: cmd.extend(["--mmproj", f"/models/{mn_proj}"])
     if mn_mtp: cmd.extend(mtp_flags(mn_mtp, n.get("mtp_nmax", 0)))
-    margs = moe_cache_flags(n)
+    margs = moe_flags(n)
     if margs: cmd.extend(margs)
     largs = lora_docker_args(n)
     if largs: cmd.extend(largs)
