@@ -596,6 +596,27 @@ def get_model_params(fpath):
             "full_layers": full_layers, "fa_interval": fa_interval, "nextn": nextn,
             "linear_state_mib": round(linear_state_mib, 1)}
 
+_moe_cache = {}
+
+def gguf_is_moe(fpath):
+    """True/False = MoE (expert_count>0) / dense; None = не удалось прочитать."""
+    try:
+        st = os.stat(fpath)
+        key = (fpath, st.st_size, int(st.st_mtime))
+    except OSError:
+        return None
+    if key in _moe_cache:
+        return _moe_cache[key]
+    try:
+        meta = read_gguf_metadata(fpath)
+        arch = meta.get('general.architecture', '')
+        n = meta.get(f'{arch}.expert_count', 0)
+        res = bool(n and int(n) > 0)
+    except Exception:
+        res = None
+    _moe_cache[key] = res
+    return res
+
 def kv_per_token_mib(params, cache_type="fp16"):
     kvb = params["kv_fp16_mib"] * 1024 * 1024
     bpc = {"fp16": 2, "q8_0": 1, "q4_0": 0.5}.get(cache_type, 2)
@@ -1540,19 +1561,26 @@ def mtp_flags(mtp, nmax=0):
         pass
     return f
 
-def moe_flags(inst):
+def moe_flags(inst, model_path=""):
+    want_cpu = bool(inst and inst.get("moe_cpu"))
+    want_cache = False
+    mib = 0
+    if inst and inst.get("moe_cache"):
+        try:
+            mib = int(inst.get("moe_cache_mib", 0))
+        except (TypeError, ValueError):
+            mib = 0
+        want_cache = mib >= 1
+    if not (want_cpu or want_cache):
+        return []
+    # Флаги MoE бессмысленны для dense-моделей (нет экспертов) — не шлём
+    if model_path and gguf_is_moe(model_path) is False:
+        return []
     args = []
-    if inst and inst.get("moe_cpu"):
+    if want_cpu:
         args.append("--cpu-moe")
-    if not inst or not inst.get("moe_cache"):
-        return args
-    try:
-        mib = int(inst.get("moe_cache_mib", 0))
-    except (TypeError, ValueError):
-        return args
-    if mib < 1:
-        return args
-    args.extend(["--moe-cache-mib", str(mib)])
+    if want_cache:
+        args.extend(["--moe-cache-mib", str(mib)])
     return args
 
 def _llama_try_load(iid, port, command, wait_s=120):
@@ -1765,7 +1793,7 @@ def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kv
         cmd.extend(["--no-warmup", "--reranking", "--pooling", "rank", "--ubatch-size", bs])
     if mn_proj: cmd.extend(["--mmproj", f"/models/{mn_proj}"])
     if mn_mtp: cmd.extend(mtp_flags(mn_mtp, n.get("mtp_nmax", 0)))
-    margs = moe_flags(n)
+    margs = moe_flags(n, os.path.join(md, mn))
     if margs: cmd.extend(margs)
     largs = lora_docker_args(n)
     if largs: cmd.extend(largs)
