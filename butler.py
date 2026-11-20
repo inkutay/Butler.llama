@@ -22,7 +22,7 @@ if os.name == "nt":
             super().__init__(*a, **kw)
     subprocess.Popen = _NoWinPopen
 
-BUTLER_VERSION = "1.0.2"
+BUTLER_VERSION = "1.0.3"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8090"))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -1561,6 +1561,44 @@ def mtp_flags(mtp, nmax=0):
         pass
     return f
 
+_runtime_help_cache = {}
+_runtime_help_lock = threading.Lock()
+
+
+def runtime_moe_support(image):
+    """Probe a local image by immutable ID; never pull an image."""
+    try:
+        inspected = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True, text=True, timeout=5,
+        )
+        image_id = inspected.stdout.strip()
+        if inspected.returncode or not image_id:
+            return {"cpu": False, "cache": False, "checked": False}
+        with _runtime_help_lock:
+            if image_id in _runtime_help_cache:
+                return dict(_runtime_help_cache[image_id])
+            name = "butler-help-" + secrets.token_hex(8)
+            try:
+                result = subprocess.run(
+                    ["docker", "run", "--rm", "--pull", "never", "--name", name,
+                     "--entrypoint", LLAMA_SERVER, image_id, "--help"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode:
+                    return {"cpu": False, "cache": False, "checked": False}
+                text = result.stdout + result.stderr
+                support = {"cpu": "--cpu-moe" in text,
+                           "cache": "--moe-cache-mib" in text, "checked": True}
+                _runtime_help_cache[image_id] = support
+                return dict(support)
+            finally:
+                subprocess.run(["docker", "rm", "-f", name],
+                               capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"cpu": False, "cache": False, "checked": False}
+
+
 def moe_flags(inst, model_path=""):
     want_cpu = bool(inst and inst.get("moe_cpu"))
     want_cache = False
@@ -1576,6 +1614,13 @@ def moe_flags(inst, model_path=""):
     # Флаги MoE бессмысленны для dense-моделей (нет экспертов) — не шлём
     if model_path and gguf_is_moe(model_path) is False:
         return []
+    support = runtime_moe_support(inst.get("docker_image") or DOCKER_IMAGE)
+    if not support["checked"]:
+        raise InputError("Could not verify MoE support for the selected runtime")
+    if want_cpu and not support["cpu"]:
+        raise InputError("Selected runtime does not support --cpu-moe")
+    if want_cache and not support["cache"]:
+        raise InputError("Selected runtime does not support --moe-cache-mib")
     args = []
     if want_cpu:
         args.append("--cpu-moe")
@@ -1751,7 +1796,7 @@ def _apply_active_lora(iid, port):
     except Exception as e:
         log.warning(f"active_lora apply failed for {iid}: {e}")
 
-def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kvq, parallel, gpu_nums):
+def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kvq, parallel, gpu_nums, moe_args=None):
     """Build identical Docker flags for manual and automatic model starts."""
     n = inst
     iid = inst["id"]
@@ -1793,8 +1838,11 @@ def _build_instance_command(inst, *, model, models_dir, ctx, ngl, flash, ram, kv
         cmd.extend(["--no-warmup", "--reranking", "--pooling", "rank", "--ubatch-size", bs])
     if mn_proj: cmd.extend(["--mmproj", f"/models/{mn_proj}"])
     if mn_mtp: cmd.extend(mtp_flags(mn_mtp, n.get("mtp_nmax", 0)))
-    margs = moe_flags(n, os.path.join(md, mn))
-    if margs: cmd.extend(margs)
+    # moe_args: pre-validated flags (from the caller's fail-fast check) — reuse, don't re-probe;
+    # None = compute here (autodetect path)
+    if moe_args is None:
+        moe_args = moe_flags(n, os.path.join(md, mn))
+    if moe_args: cmd.extend(moe_args)
     largs = lora_docker_args(n)
     if largs: cmd.extend(largs)
     return cmd
@@ -1832,6 +1880,10 @@ async def api_load(request: Request):
     for idx in gpu_indices:
         try: gpu_nums.append(str(int(str(idx).replace("GPU", ""))))
         except: pass
+    img = n.get("docker_image") or DOCKER_IMAGE
+    if not _docker_image_exists(img):
+        return JSONResponse({"success": False, "message": f"Runtime image not found locally: {img}"}, status_code=400)
+    moe_args = await asyncio.to_thread(moe_flags, n, mp)
     # protect from idle-unload: UI START path had NO mark_active -> stale _last_active made
     # the checker unload the model 30-90s after load. Mark active BEFORE starting (like v1_chat).
     mark_active(iid)
@@ -1855,11 +1907,9 @@ async def api_load(request: Request):
         if stopped_any:
             if not await asyncio.to_thread(_wait_gpu_free, gpu_nums, timeout=45):
                 log.warning(f"api_load {iid}: GPUs {gpu_nums} still busy after 45s — orphan container? check `docker ps`")
-    img = n.get("docker_image") or DOCKER_IMAGE
-    if img != DOCKER_IMAGE and not _docker_image_exists(img):
-        return JSONResponse({"success": False, "message": f"Runtime image not found locally: {img}"}, status_code=400)
-    cmd = _build_instance_command(n, model=mn, models_dir=md, ctx=ctx, ngl=ngl,
-                                  flash=flash, ram=ram, kvq=kvq, parallel=parallel, gpu_nums=gpu_nums)
+    cmd = await asyncio.to_thread(_build_instance_command, n, model=mn, models_dir=md, ctx=ctx, ngl=ngl,
+                                  flash=flash, ram=ram, kvq=kvq, parallel=parallel, gpu_nums=gpu_nums,
+                                  moe_args=moe_args)
     reset_speed_extrema(iid)
     try:
         result = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
@@ -2146,6 +2196,10 @@ def _docker_image_version(img):
 
 @app.get("/api/runtimes")
 async def api_runtimes():
+    return await _run_blocking(_api_runtimes_sync)
+
+
+def _api_runtimes_sync():
     runtimes = []
     seen = set()
     def add(image, label="", default=False):
@@ -2157,7 +2211,8 @@ async def api_runtimes():
         v = _docker_image_version(image)
         if v:
             lbl = f"{lbl} — {v}"
-        runtimes.append({"image": image, "label": lbl, "default": bool(default)})
+        runtimes.append({"image": image, "label": lbl, "default": bool(default),
+                         "moe_support": runtime_moe_support(image)})
     add(DOCKER_IMAGE, "llama.cpp (standard)", default=True)
     for r in (load_config().get("runtimes") or []):
         if isinstance(r, dict):
@@ -2438,6 +2493,9 @@ async def api_calculate(request: Request):
     md = data.get("dir") or _current_models_dir
     params = get_cached_model_params(model_name, md)
     if not params: return JSONResponse({"error": "Model not found"})
+    if params.get("n_expert", 0) > 0 and data.get("moe_cpu"):
+        return JSONResponse({"params": params, "estimate_available": False,
+                             "estimate_message": "MoE CPU offload: memory estimate unavailable"})
     free_vram = int(data.get("free_vram_gb", 0)) * 1024
     num_gpus = max(1, int(data.get("num_gpus", 1)))
     ngl = min(int(data.get("ngl", 99)), params.get("n_layers", 99))
@@ -2456,6 +2514,8 @@ async def api_calculate(request: Request):
     except Exception:
         pass
     model_gpu = mgb * 1024 * (ngl / nl) if nl > 0 else mgb * 1024
+    if params.get("n_expert", 0) > 0 and data.get("moe_cache"):
+        model_gpu += int(data.get("moe_cache_mib", 0))
     lin_state = params.get("linear_state_mib", 0) or 0
     mmproj_mib = 0
     mp_name = data.get("mmproj", "")
@@ -2529,6 +2589,21 @@ async def butler_start_instance(inst, stop_conflicts=True):
                     pass
                 await asyncio.sleep(1)
         return False
+    # fail-fast validations BEFORE any side effects (stop own/conflicting containers):
+    mn = inst.get("model", "")
+    if not mn:
+        log.error(f"no model set for {iid}")
+        return False
+    md = inst_models_dir(inst)
+    mp = os.path.join(md, mn)
+    if not os.path.isfile(mp):
+        log.error(f"model file not found for {iid}: {mp}")
+        return False
+    img = inst.get("docker_image") or DOCKER_IMAGE
+    if not _docker_image_exists(img):
+        log.error(f"runtime image not found locally: {img} for {iid}")
+        return False
+    moe_args = await asyncio.to_thread(moe_flags, inst, mp)
     # Remove a stopped/failed container left by an earlier attempt.
     await asyncio.to_thread(_stop_rm_container, f"llama-inst-{iid}")
     wanted = [str(x).replace("GPU", "") for x in inst.get("gpu_indices", []) if x != "__select__"]
@@ -2548,14 +2623,7 @@ async def butler_start_instance(inst, stop_conflicts=True):
                 stopped_any = True
         if stopped_any and wanted:
             await asyncio.to_thread(_wait_gpu_free, wanted, timeout=45)
-    # Build docker command
-    mn = inst.get("model", "")
-    if not mn:
-        return False
-    md = inst_models_dir(inst)
-    mp = os.path.join(md, mn)
-    if not os.path.isfile(mp):
-        return False
+    # Build docker command (mn/md/mp уже проверены наверху)
     mn_proj = inst.get("mmproj", "")
     if mn_proj and not os.path.isfile(os.path.join(md, mn_proj)):
         return False
@@ -2573,12 +2641,9 @@ async def butler_start_instance(inst, stop_conflicts=True):
     ram = bool(inst.get("ram", False))
     kvq = inst.get("kvq", "q8_0")
     parallel = int(inst.get("parallel", 1))
-    img = inst.get("docker_image") or DOCKER_IMAGE
-    if img != DOCKER_IMAGE and not _docker_image_exists(img):
-        log.error(f"runtime image not found locally: {img} for {iid}")
-        return False
-    cmd = _build_instance_command(inst, model=mn, models_dir=md, ctx=ctx, ngl=ngl,
-                                  flash=flash, ram=ram, kvq=kvq, parallel=parallel, gpu_nums=wanted)
+    cmd = await asyncio.to_thread(_build_instance_command, inst, model=mn, models_dir=md, ctx=ctx, ngl=ngl,
+                                  flash=flash, ram=ram, kvq=kvq, parallel=parallel, gpu_nums=wanted,
+                                  moe_args=moe_args)
     reset_speed_extrema(iid)
     try:
         r = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, timeout=30)
