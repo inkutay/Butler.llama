@@ -511,7 +511,7 @@ document.addEventListener("keydown",function(e){if(e.key!=="Escape")return;const
   </div>
 <div class="toast" id="toast"></div>
 <script>
-let SYSTEM_GPUS=[],MODEL_LIST=[],LORA_LIST=[],INSTANCES=[],ACTIVE={},BUTLER_MODE='ON',_mutate=false,_savedModelsDir='',_lastCreatedName='',_expandedId='';let _instTab=localStorage.getItem('butler_insttab')||'chat';let _lastMetrics={};let _isGenerating=false;let _chatAbort=null;let _chatHistory=[];let _chatShowThink=true;
+let SYSTEM_GPUS=[],MODEL_LIST=[],LORA_LIST=[],INSTANCES=[],ACTIVE={},BUTLER_MODE='ON',_mutate=false,_savedModelsDir='',_lastCreatedName='',_expandedId='';let _instTab=localStorage.getItem('butler_insttab')||'chat';let _lastMetrics={};let _isGenerating=false;let _chatAbort=null;const chatThreads=new Map();let _chatShowThink=true;
 window._lang = localStorage.getItem('butler_lang')||'ru';
 const LANG={
   en:{loading:'Loading model',loadingModel:'Loading model',pleaseWait:'please wait',modelReady:'Model loaded!',greetingUser:'Hi! Introduce yourself - who are you and how can you help me?',sendGreeting:'Sending greeting',loadError:'Load error',containerError:'Container error',instanceStart:'Instance',modelLoaded:'model loaded',modelUnloaded:'model unloaded',instanceStopped:'Instance',gpuBusy:'GPU(s) already in use:',gpuBusyDesc:'Stop running instances',butlerStarting:'Butler starting',butlerStopping:'Butler stopping'},
@@ -573,6 +573,7 @@ SYSTEM_GPUS=d.gpus||[];const metrics=d.gpu_metrics||{};_lastMetrics=metrics;
 MODEL_LIST=(d.models_with_status||d.models||[]).map(m=>({name:m.name,size_gb:m.size_gb,status:m.status||''}));
 try{const ml=await apiGet('/api/models');if(ml!==undefined){MODEL_LIST=ml.map(mm=>{const s=MODEL_LIST.find(m=>m.name===mm.name);return{name:mm.name,size_gb:mm.size_gb,status:s?.status||''};});}}catch(e){}
 INSTANCES=d.instances||[];ACTIVE=d.active||{};LORA_LIST=d.loras||[];BUTLER_MODE=(d.butler&&d.butler.mode)||'ON';
+pruneChatThreads();
 INSTANCES.forEach(i=>{const el=document.getElementById('pp_'+i.id);if(el){if(i.slots){const q=i.slots.queued>0;el.textContent='P: ['+i.slots.active+'/'+i.slots.total+']'+(q?' +'+i.slots.queued:'');el.classList.toggle('pp-busy',i.slots.active>0&&i.slots.active<i.slots.total);el.classList.toggle('pp-full',i.slots.active>0&&i.slots.active>=i.slots.total&&!q);el.classList.toggle('pp-queue',q);}else{el.textContent='P: [--]';el.classList.remove('pp-busy');el.classList.remove('pp-full');el.classList.remove('pp-queue');}}const sp=document.getElementById('speed_'+i.id);if(sp){const sv=i.speed_tps||0;const live=!!i.speed_live;sp.textContent=sv>0?sv+' t/s':'--';sp.classList.toggle('spd-active',live&&sv>0);sp.title=(sv>0)?(live?'live speed':'last measured speed (sticky)'):'';}const sa=document.getElementById('spdavg_'+i.id);if(sa)sa.textContent=(i.avg_speed_tps||0)>0?i.avg_speed_tps:'--';const smn=document.getElementById('spdmin_'+i.id);if(smn)smn.textContent=(i.min_speed_tps||0)>0?i.min_speed_tps:'--';const smx=document.getElementById('spdmax_'+i.id);if(smx)smx.textContent=(i.max_speed_tps||0)>0?i.max_speed_tps:'--';});
 const _dirs=[...new Set(INSTANCES.map(i=>i.models_dir||'').filter(Boolean))];
 for(const _d of _dirs){try{await getDirModels(_d);}catch(e){}}
@@ -594,8 +595,9 @@ const sel=document.getElementById('chatModelSelect');
 if(sel&&(force||document.activeElement!==sel)){
 const curVal=sel.value;
 sel.innerHTML='<option value="">— select instance —</option>';
-INSTANCES.filter(inst=>(inst.mode||'chat')==='chat').forEach(inst=>{const stt=advanceState(inst.id,!!ACTIVE[inst.id],!!inst.model_ready,!!inst.model_failed,!!inst.stopping);const su=STATE_UI[stt];const color=stt==='on'?'var(--text-green)':(stt==='failed'?'var(--text-danger)':(stt==='off'?'var(--text-secondary)':'var(--text-yellow)'));const label=su.lbl;if(inst.allowed!==false&&(BUTLER_MODE==='ON'||!!ACTIVE[inst.id])){sel.innerHTML+='<option value="'+inst.id+'" style="color:'+color+'"'+(inst.id===curVal?' selected':'')+'>'+escapeHtml(inst.name||inst.id)+' ['+label+']</option>';}});
-updateChatColor();}
+sel.innerHTML+='<option value="auto"'+(curVal==='auto'?' selected':'')+'>auto</option>';
+INSTANCES.filter(inst=>(inst.mode||'chat')==='chat').forEach(inst=>{const stt=advanceState(inst.id,!!ACTIVE[inst.id],!!inst.model_ready,!!inst.model_failed,!!inst.stopping);const su=STATE_UI[stt];const color=stt==='on'?'var(--text-green)':(stt==='failed'?'var(--text-danger)':(stt==='off'?'var(--text-secondary)':'var(--text-yellow)'));const label=su.lbl;if(inst.allowed!==false&&(BUTLER_MODE==='ON'||!!ACTIVE[inst.id])){sel.innerHTML+='<option value="'+chatSelection(inst.id)+'" style="color:'+color+'"'+(chatSelection(inst.id)===curVal?' selected':'')+'>'+escapeHtml(inst.name||inst.id)+' ['+label+']</option>';}});
+syncChatThread();}
 }
 
 function updateMetrics(metrics){_lastMetrics=metrics;
@@ -890,7 +892,7 @@ function toggleModelsCard(){const c=document.getElementById('modelsCard');if(!c)
 function toggleChatCard(){const c=document.getElementById('chatCard');if(c)c.classList.toggle('expanded');}
 function scrollCardTop(card,offset=20){const y=card.getBoundingClientRect().top+window.scrollY-offset;window.scrollTo({top:Math.max(0,y),behavior:'smooth'});}
 function toggleInstCard(id){const card=document.querySelector(`.instance-card[data-inst="${id}"]`);if(!card)return;const willExpand=!card.classList.contains('expanded');document.querySelectorAll('.instance-card').forEach(c=>{if(c!==card)c.classList.remove('expanded');});card.classList.toggle('expanded');_expandedId=willExpand?id:'';if(willExpand)requestAnimationFrame(()=>scrollCardTop(card));}
-async function renameInst(id,n){if(!n.trim())return;try{await apiPatch('/api/instances/'+id,{name:n.trim()});}catch(e){}}
+async function renameInst(id,n){if(!n.trim())return;try{await apiPatch('/api/instances/'+id,{name:n.trim()});}catch(e){toast(e.message,true);_mutate=true;await loadStatus();}}
 const ICON_LOCK='<svg width="14" height="17" viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 10 0v4" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/><rect x="3" y="11" width="18" height="11" rx="2.5" fill="#ffffff"/><circle cx="12" cy="15.5" r="1.8" fill="var(--btn-green)"/><rect x="11" y="15.5" width="2" height="4.5" rx="1" fill="var(--btn-green)"/></svg>';
 const ICON_UNLOCK='<svg width="14" height="17" viewBox="0 0 24 24"><path d="M7 11V7a5 5 0 0 1 9.9-1" fill="none" stroke="#6b7a6b" stroke-width="2.5" stroke-linecap="round"/><rect x="3" y="11" width="18" height="11" rx="2.5" fill="#6b7a6b"/><circle cx="12" cy="15.5" r="1.8" fill="#2a332a"/><rect x="11" y="15.5" width="2" height="4.5" rx="1" fill="#2a332a"/></svg>';
 async function toggleExempt(iid){
@@ -947,9 +949,10 @@ toast(r.message||'Stopped');
 _mutate=true;await loadStatus();
 // Write to chat only if chat card is already open
 const chatCard=document.getElementById('chatCard');
-if(chatCard&&chatCard.classList.contains('expanded')){
-document.getElementById('chatOutput').innerHTML+='<div style="color:var(--text-yellow)">> '+t('instanceStopped')+' <b>'+escapeHtml(inst.name)+'</b>.'+(model?' '+t('modelUnloaded')+' <b>'+escapeHtml(model.replace(/^.*[/\\]/,''))+'</b>.':'')+'</div>';
-document.getElementById('chatOutput').scrollTop=document.getElementById('chatOutput').scrollHeight;}
+if(chatCard&&chatCard.classList.contains('expanded')&&document.getElementById('chatModelSelect').value===chatSelection(id)){
+const output=getChatThread(chatSelection(id)).output;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('instanceStopped')+' <b>'+escapeHtml(inst.name)+'</b>.'+(model?' '+t('modelUnloaded')+' <b>'+escapeHtml(model.replace(/^.*[/\\]/,''))+'</b>.':'')+'</div>');
+scrollChatOutput(output);}
 }catch(e){toast(e.message,true);}
 return;}
 if(pendingCardSaves.has(id))await pendingCardSaves.get(id);
@@ -967,16 +970,14 @@ const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
 window.scrollTo({top:0,behavior:'smooth'});
 const chatCard=document.getElementById('chatCard');
 if(!chatCard.classList.contains('expanded'))chatCard.classList.add('expanded');
-const output=document.getElementById('chatOutput');
 const modelName=model.replace(/^.*[/\\]/,'');
 const instName=escapeHtml(inst.name||id);
 // Switch chat select to this instance
 selectChatInstance(id);
-_chatHistory=[];
-output.innerHTML='';
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('instanceStart')+' <b>'+instName+'</b></div>';
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>';
-output.scrollTop=output.scrollHeight;
+const output=getChatThread(chatSelection(id)).output;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('instanceStart')+' <b>'+instName+'</b></div>');
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>');
+scrollChatOutput(output);
 // Check GPU availability (embed/rerank are small and share the GPU with an LLM — no conflict)
 const gpuIndices=(inst.gpu_indices||[]).filter(i=>i!=='__select__');
 const isChatInst=(inst.mode||'chat')==='chat';
@@ -996,20 +997,20 @@ for(const other of INSTANCES){
 if(other.id===id||!ACTIVE[other.id])continue;if((other.mode||'chat')!=='chat')continue;
 const matches=(other.gpu_indices||[]).filter(i=>i!=='__select__').some(gi=>gpuIndices.includes(gi));
 if(matches){
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>';
-output.scrollTop=output.scrollHeight;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>');
+scrollChatOutput(output);
 try{await requestInstanceStop(other.id);}catch(e){}}}
 await loadStatus();
 } else {
-output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusy')+' '+escapeHtml(busyGpus.join(', '))+'</div>';
-output.innerHTML+='<div style="color:var(--text-danger)">> '+t('gpuBusyDesc')+':</div>';
-output.scrollTop=output.scrollHeight;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-danger)">> '+t('gpuBusy')+' '+escapeHtml(busyGpus.join(', '))+'</div>');
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-danger)">> '+t('gpuBusyDesc')+':</div>');
+scrollChatOutput(output);
 let busyNames=[];
 INSTANCES.forEach(other=>{if(other.id===id||!ACTIVE[other.id])return;
 const matches=(other.gpu_indices||[]).filter(i=>i!=='__select__').some(gi=>gpuIndices.includes(gi));
 if(matches&&!busyNames.includes(other.name))busyNames.push(other.name);});
-output.innerHTML+='<div style="color:var(--text-yellow)">'+escapeHtml(busyNames.join(', '))+'</div>';
-output.scrollTop=output.scrollHeight;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">'+escapeHtml(busyNames.join(', '))+'</div>');
+scrollChatOutput(output);
 return;
 }}
 setInstIntent(id,'up');
@@ -1017,13 +1018,13 @@ try{
 const r=await apiPost('/api/load',{instance:id,model,ctx_size:ctx,ngl,flash_attn:flash,ram_kv:ram,kvq,parallel});
 if(!r||!r.success){
 _is[id]&&(_is[id].pending=false);
-output.innerHTML+='<div style="color:var(--text-danger)">'+t('loadError')+': '+escapeHtml(r&&r.message||'')+'</div>';
-output.scrollTop=output.scrollHeight;return;}
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-danger)">'+t('loadError')+': '+escapeHtml(r&&r.message||'')+'</div>');
+scrollChatOutput(output);return;}
 // Poll readiness
 const progressDiv=document.createElement('div');
 progressDiv.style.cssText='color:var(--text-yellow);white-space:pre-wrap';
 progressDiv.textContent=t('loadingModel')+'... '+t('pleaseWait');
-output.appendChild(progressDiv);output.scrollTop=output.scrollHeight;
+output.appendChild(progressDiv);scrollChatOutput(output);
 const spinner = ['|','/','-','\\'];
 let si=0;
 const spinnerTimer=setInterval(()=>{si=(si+1)%4;progressDiv.textContent=t('loadingModel')+' '+spinner[si]+' '+t('pleaseWait');},200);
@@ -1036,17 +1037,13 @@ clearInterval(poll);
 clearInterval(spinnerTimer);
 progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+escapeHtml(modelName)+'</b>';
 progressDiv.style.color='var(--text-green)';
-output.scrollTop=output.scrollHeight;
+scrollChatOutput(output);
 await loadStatus();
-// Switch chat select to this instance
-document.getElementById('chatModelSelect').value=id;
 // Send greeting if auto-request enabled
 const autoReqCheck=document.getElementById('autoReqCheck');
-if(autoReqCheck&&autoReqCheck.checked){
+if(isChatInst&&autoReqCheck&&autoReqCheck.checked&&document.getElementById('chatModelSelect').value===chatSelection(id)){
 const greetingText=document.getElementById('autoReqText').value.trim()||t('greetingUser');
-_chatHistory=[];
-_chatHistory.push({role:'user',content:greetingText});
-autoSendChat(lang);}
+await autoSendChat(lang,greetingText);}
 } else if(chk.status==='starting'){
 _is[id]&&(_is[id].sawRunning=true);
 } else if((chk.status==='exited'||chk.status==='dead')||(_is[id]&&_is[id].pending&&_is[id].sawRunning&&chk.status&&chk.status!=='starting')){
@@ -1056,18 +1053,18 @@ clearInterval(spinnerTimer);
 _is[id].failed=true;_is[id].pending=false;_state[id]='failed';
 progressDiv.innerHTML='> <b>'+instName+'</b>: '+ButlerI18n.translate('Instance is OFF: model failed to load (out of VRAM?). Reduce CTX or NGL, or add a GPU. Click to retry.');
 progressDiv.style.color='var(--text-danger)';
-output.scrollTop=output.scrollHeight;
+scrollChatOutput(output);
 await loadStatus();
 } else if((Date.now()-pollStart)>600000){
 clearInterval(poll);
 clearInterval(spinnerTimer);
 progressDiv.textContent=ButlerI18n.translate('Load timed out (10 min). Check VRAM/ctx, click to retry.');
 progressDiv.style.color='var(--text-danger)';
-output.scrollTop=output.scrollHeight;
+scrollChatOutput(output);
 }}catch(e){}},2500);
 }catch(e){
-output.innerHTML+='<div style="color:var(--text-danger)">'+t('containerError')+': '+escapeHtml(e.message||'')+'</div>';
-output.scrollTop=output.scrollHeight;}}
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-danger)">'+t('containerError')+': '+escapeHtml(e.message||'')+'</div>');
+scrollChatOutput(output);}}
 
 async function changeGpu(id, oldGpu, select){
     const newGpu = select.value;
@@ -1258,21 +1255,77 @@ function changeModelsDir(p){_savedModelsDir=p;const mdEl=document.getElementById
 apiPost('/api/config',{models_dir:p}).then(r=>{if(r&&r.success){toast('Models dir saved');_mutate=true;loadStatus();}}).catch(e=>{toast('Error: directory not found',true);});
 }
 
+function chatSelection(id){
+    return id === 'auto' ? 'instance/auto' : id;
+}
+
+function getChatThread(selection){
+    let thread = chatThreads.get(selection);
+    if (!thread) {
+        const iid = selection === 'auto' ? null : selection === 'instance/auto' ? 'auto' : selection;
+        const output = document.createElement('div');
+        output.hidden = document.getElementById('chatModelSelect').value !== selection;
+        document.getElementById('chatOutput').appendChild(output);
+        thread = {iid, history: [], output, container: iid && ACTIVE[iid]};
+        chatThreads.set(selection, thread);
+    }
+    return thread;
+}
+
+function dropChatThread(selection){
+    const thread = chatThreads.get(selection);
+    if (thread) thread.output.remove();
+    chatThreads.delete(selection);
+}
+
+function pruneChatThreads(){
+    const instances = new Map(INSTANCES.map(inst => [inst.id, inst]));
+    for (const [selection, thread] of chatThreads) {
+        if (!thread.iid) continue;
+        const inst = instances.get(thread.iid);
+        const current = ACTIVE[thread.iid];
+        const previous = thread.container;
+        if (!inst || (inst.mode || 'chat') !== 'chat' || inst.model_failed ||
+            (previous && (!current || (previous.container_id &&
+                current.container_id && previous.container_id !== current.container_id)))) {
+            dropChatThread(selection);
+        } else if (current) {
+            thread.container = current;
+        }
+    }
+}
+
+function scrollChatOutput(output){
+    const panel = output.parentElement;
+    if (panel && !output.hidden) panel.scrollTop = panel.scrollHeight;
+}
+
+function syncChatThread(){
+    const selection = document.getElementById('chatModelSelect').value;
+    for (const [key, thread] of chatThreads) {
+        const wasHidden = thread.output.hidden;
+        thread.output.hidden = key !== selection;
+        if (wasHidden && !thread.output.hidden) scrollChatOutput(thread.output);
+    }
+    updateChatColor();
+}
+
 function selectChatInstance(id){
 const s=document.getElementById('chatModelSelect');
 const inst=INSTANCES.find(i=>i.id===id);
 if(!inst)return;
 // Ensure option exists (may be OFF and filtered out)
-let opt=s.querySelector('option[value="'+id+'"]');
+const selection=chatSelection(id);
+let opt=s.querySelector('option[value="'+selection+'"]');
 if(!opt){
-opt=document.createElement('option');opt.value=id;
+opt=document.createElement('option');opt.value=selection;
 const isActive=!!ACTIVE[id];
 opt.style.color=isActive?'var(--text-green)':'var(--text-secondary)';
 opt.textContent=(inst.name||inst.id)+' ['+(isActive?'ON':'OFF')+']';
 s.appendChild(opt);}
-s.value=id;updateChatColor();}
-function updateChatColor(){const s=document.getElementById('chatModelSelect');const v=s.value;const inst=INSTANCES.find(i=>i.id===v);if(v&&inst&&ACTIVE[inst.id])s.style.color='var(--text-green)';else if(v&&inst)s.style.color='var(--text-secondary)';else s.style.color='#ffffff';}
-document.getElementById('chatModelSelect').addEventListener('change',function(){updateChatColor();_chatHistory=[];document.getElementById('chatOutput').innerHTML='';});
+s.value=selection;syncChatThread();}
+function updateChatColor(){const s=document.getElementById('chatModelSelect');const v=s.value;const inst=INSTANCES.find(i=>chatSelection(i.id)===v);if(v==='auto'){s.style.color='var(--text-green)';return;}if(v&&inst&&ACTIVE[inst.id])s.style.color='var(--text-green)';else if(v&&inst)s.style.color='var(--text-secondary)';else s.style.color='#ffffff';}
+document.getElementById('chatModelSelect').addEventListener('change',syncChatThread);
 document.getElementById('autoReqText').addEventListener('keydown',function(e){if(e.key==='Enter')this.blur();});
 document.getElementById('autoReqText').addEventListener('blur',function(){localStorage.setItem('butler_autoReqText',this.value);localStorage.setItem('butler_autoReqText_custom','1');localStorage.setItem('butler_autoReqText_lang',window._lang);});
 document.getElementById('autoReqCheck').addEventListener('change',function(){localStorage.setItem('butler_autoReqCheck',this.checked?'1':'0');});
@@ -1308,25 +1361,28 @@ const defaults={en:'Hi! Introduce yourself - who are you and how can you help me
 if(!keepCustom)document.getElementById('autoReqText').value=defaults[v]||defaults.ru;}
 // Init lang on load
 document.getElementById('langSelect').value=window._lang;
-async function autoSendChat(lang){
+async function autoSendChat(lang,message){
+if(_isGenerating)return;
 const t=k=>LANG[lang][k]||LANG.ru[k]||k;
 const model=document.getElementById('chatModelSelect').value;
 if(!model)return;
+const routeModel=model==='auto'?'auto':(model.startsWith('instance/')?model:'instance/'+model);
 const input=document.getElementById('chatInput');input.value='';
-const output=document.getElementById('chatOutput');
-const msg=_chatHistory.length?_chatHistory[_chatHistory.length-1].content:'';
-if(!msg)return;
-const msgs=_chatHistory.slice(-40);
+const {output,history}=getChatThread(model);
+if(!message)return;
+const msg=message;
+history.push({role:'user',content:msg});
+const msgs=history.slice(-40);
 _isGenerating=true;const sb=document.getElementById('btnSend');const cb=document.getElementById('btnClear');
 sb.classList.add('stop');sb.innerHTML='<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';cb.disabled=true;
 _chatAbort=new AbortController();
-output.innerHTML+='<div style="color:var(--text-blue)">> '+msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';output.scrollTop=output.scrollHeight;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-blue)">> '+msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>');scrollChatOutput(output);
 const thinkDiv=document.createElement('div');thinkDiv.className='think-div';thinkDiv.style.cssText='color:var(--text-yellow);white-space:pre-wrap;word-wrap:break-word'+(_chatShowThink?'':' ;display:none');output.appendChild(thinkDiv);
 const replyDiv=document.createElement('div');replyDiv.style.cssText='color:var(--text-green);white-space:pre-wrap;word-wrap:break-word';output.appendChild(replyDiv);
-try{const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer ' + document.getElementById('apiKey').value},body:JSON.stringify({model:model,messages:msgs,stream:true}),signal:_chatAbort.signal});if(!r.ok)throw new Error(await r.text());
+try{const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer ' + document.getElementById('apiKey').value},body:JSON.stringify({model:routeModel,messages:msgs,stream:true}),signal:_chatAbort.signal});if(!r.ok)throw new Error(await r.text());
 const reader=r.body.getReader();const decoder=new TextDecoder();let buf='',think='',reply='';
-while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')&&!line.includes('[DONE]')){try{const d=JSON.parse(line.slice(5));const c=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.content||'';const t=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.reasoning_content||'';if(t){think+=t;thinkDiv.textContent=think.replace(/</g,'&lt;').replace(/>/g,'&gt;');}if(c){reply+=c;replyDiv.textContent=reply.replace(/</g,'&lt;').replace(/>/g,'&gt;');}output.scrollTop=output.scrollHeight;}catch(e){}}}}
-_chatHistory.push({role:'assistant',content:reply});if(think)_chatHistory[_chatHistory.length-1].reasoning_content=think;
+while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')&&!line.includes('[DONE]')){try{const d=JSON.parse(line.slice(5));const c=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.content||'';const t=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.reasoning_content||'';if(t){think+=t;thinkDiv.textContent=think.replace(/</g,'&lt;').replace(/>/g,'&gt;');}if(c){reply+=c;replyDiv.textContent=reply.replace(/</g,'&lt;').replace(/>/g,'&gt;');}scrollChatOutput(output);}catch(e){}}}}
+history.push({role:'assistant',content:reply,...(think?{reasoning_content:think}:{})});
 }catch(e){if(e.name!='AbortError'){replyDiv.innerHTML+='<div style="color:var(--text-danger)">Error: '+escapeHtml(e.message||'')+'</div>';}}
 finally{sb.classList.remove('stop');sb.innerHTML='<svg viewBox="0 0 25 25"><polygon fill="#FEFEFE" points="24.5,0.5 18.12,25.5 13.34,11.66 -0.5,6.88 "/></svg>';cb.disabled=false;_isGenerating=false;}}
 
@@ -1335,7 +1391,7 @@ const inst=INSTANCES.find(i=>i.id===id);
 if(!inst||ACTIVE[id])return true;
 const lang=window._lang||'ru';
 const t=k=>LANG[lang][k]||LANG.ru[k]||k;
-const output=document.getElementById('chatOutput');
+const output=getChatThread(chatSelection(id)).output;
 const instName=escapeHtml(inst.name||id);
 // Stop conflicting instances
 const busyGpus=(inst.gpu_indices||[]).filter(i=>i!=='__select__');
@@ -1343,8 +1399,8 @@ for(const other of INSTANCES){
 if(other.id===id||!ACTIVE[other.id])continue;
 const otherGpus=(other.gpu_indices||[]).filter(i=>i!=='__select__');
 if(otherGpus.some(gi=>busyGpus.includes(gi))){
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>';
-output.scrollTop=output.scrollHeight;
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('butlerStopping')+' <b>'+escapeHtml(other.name||other.id)+'</b></div>');
+scrollChatOutput(output);
 try{await requestInstanceStop(other.id);}catch(e){}}}
 if(busyGpus.length)await loadStatus();
 // Start
@@ -1359,17 +1415,17 @@ const parallel=parseInt(card.querySelector('.inst-parallel')?.value)||1;
 const flash=card.querySelector('input[type="checkbox"][data-param="flash"]')?.checked||false;
 const ram=card.querySelector('input[type="checkbox"][data-param="ram"]')?.checked||false;
 const kvq=(card.querySelector('.inst-kv')?.value||'Q8_0').toLowerCase();
-output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('butlerStarting')+' <b>'+instName+'</b></div>';
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('butlerStarting')+' <b>'+instName+'</b></div>');
 const modelName=(model||'').replace(/^.*[/\\]/,'');
-if(modelName)output.innerHTML+='<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>';
-output.scrollTop=output.scrollHeight;
+if(modelName)output.insertAdjacentHTML('beforeend','<div style="color:var(--text-yellow)">> '+t('loading')+' <b>'+escapeHtml(modelName)+'</b></div>');
+scrollChatOutput(output);
 setInstIntent(id,'up');
 try{
 // Add spinner
 const progressDiv=document.createElement('div');
 progressDiv.style.cssText='color:var(--text-yellow);white-space:pre-wrap';
 progressDiv.textContent=t('loadingModel')+' | '+t('pleaseWait');
-output.appendChild(progressDiv);output.scrollTop=output.scrollHeight;
+output.appendChild(progressDiv);scrollChatOutput(output);
 const spinner=['|','/','-','\\'];let si=0;
 const spinnerTimer=setInterval(()=>{si=(si+1)%4;progressDiv.textContent=t('loadingModel')+' '+spinner[si]+' '+t('pleaseWait');},200);
 const r=await apiPost('/api/load',{instance:id,model,ctx_size:ctx,ngl,flash_attn:flash,ram_kv:ram,kvq,parallel});
@@ -1378,13 +1434,12 @@ if(!r||!r.success){clearInterval(spinnerTimer);if(_is[id])_is[id].pending=false;
 for(let i=0;i<180;i++){
 await new Promise(r=>setTimeout(r,1000));
 try{const chk=await(await fetch('/api/check/'+id)).json();
-if(chk.ready){clearInterval(spinnerTimer);await loadStatus();progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+escapeHtml(modelName)+'</b>';progressDiv.style.color='var(--text-green)';output.scrollTop=output.scrollHeight;
+if(chk.ready){clearInterval(spinnerTimer);await loadStatus();progressDiv.innerHTML=t('instanceStart')+' <b>'+instName+'</b>. '+t('modelLoaded')+': <b>'+escapeHtml(modelName)+'</b>';progressDiv.style.color='var(--text-green)';scrollChatOutput(output);
 // Send greeting if auto-request enabled
 const autoReqCheck=document.getElementById('autoReqCheck');
-if(autoReqCheck&&autoReqCheck.checked){
+if(autoReqCheck&&autoReqCheck.checked&&document.getElementById('chatModelSelect').value===chatSelection(id)){
 const greetingText=document.getElementById('autoReqText').value.trim()||t('greetingUser');
-if(typeof _chatHistory!=='undefined'){_chatHistory=[];_chatHistory.push({role:'user',content:greetingText});}
-autoSendChat(lang);}
+await autoSendChat(lang,greetingText);}
 return true;}
 else if(chk.status==='starting'){if(_is[id])_is[id].sawRunning=true;}
 else if((chk.status==='exited'||chk.status==='dead')||(_is[id]&&_is[id].pending&&_is[id].sawRunning&&chk.status&&chk.status!=='starting')){
@@ -1393,7 +1448,7 @@ clearInterval(spinnerTimer);
 _is[id].failed=true;_is[id].pending=false;_state[id]='failed';
 progressDiv.innerHTML='> <b>'+instName+'</b>: '+ButlerI18n.translate('Instance is OFF: model failed to load (out of VRAM?). Reduce CTX or NGL, or add a GPU.');
 progressDiv.style.color='var(--text-danger)';
-output.scrollTop=output.scrollHeight;
+scrollChatOutput(output);
 await loadStatus();
 return false;}}
 catch(e){progressDiv.textContent=t('loadError');}}
@@ -1402,25 +1457,28 @@ return false;
 }catch(e){clearInterval(spinnerTimer);progressDiv.textContent=t('loadError');return false;}}
 
 async function sendChat(){if(_isGenerating){_chatAbort.abort();return;}
-const model=document.getElementById('chatModelSelect').value,input=document.getElementById('chatInput'),output=document.getElementById('chatOutput');const msg=input.value.trim();if(!msg)return;if(!model){toast('Select model',true);return;}
+const selection=document.getElementById('chatModelSelect').value;const model=selection==='instance/auto'?'auto':selection;const routeModel=selection==='auto'?'auto':'instance/'+model;const input=document.getElementById('chatInput');const msg=input.value.trim();if(!msg)return;if(!model){toast('Select model',true);return;}
 // Butler ON + instance OFF → auto-start first
-if(BUTLER_MODE==='ON'&&!ACTIVE[model]){
+if(selection!=='auto'&&BUTLER_MODE==='ON'&&!ACTIVE[model]){
 const ok=await butlerAutoStart(model);
 if(!ok){toast(ButlerI18n.translate('Auto-start failed'),true);return;}}
-_chatHistory.push({role:'user',content:msg});
-const msgs=_chatHistory.slice(-40);
+if(_isGenerating)return;
+const {output,history}=getChatThread(selection);
+history.push({role:'user',content:msg});
+const msgs=history.slice(-40);
 _isGenerating=true;const sb=document.getElementById('btnSend');const cb=document.getElementById('btnClear');
 sb.classList.add('stop');sb.innerHTML='<svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';cb.disabled=true;
-input.value='';_chatAbort=new AbortController();
-output.innerHTML+='<div style="color:var(--text-blue)">> '+msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';output.scrollTop=output.scrollHeight;
+if(document.getElementById('chatModelSelect').value===selection&&input.value.trim()===msg)input.value='';
+_chatAbort=new AbortController();
+output.insertAdjacentHTML('beforeend','<div style="color:var(--text-blue)">> '+msg.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>');scrollChatOutput(output);
 const thinkDiv=document.createElement('div');thinkDiv.className='think-div';thinkDiv.style.cssText='color:var(--text-yellow);white-space:pre-wrap;word-wrap:break-word'+(_chatShowThink?'':' ;display:none');output.appendChild(thinkDiv);
 const replyDiv=document.createElement('div');replyDiv.style.cssText='color:var(--text-green);white-space:pre-wrap;word-wrap:break-word';output.appendChild(replyDiv);
-try{const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer ' + document.getElementById('apiKey').value},body:JSON.stringify({model:model,messages:msgs,stream:true}),signal:_chatAbort.signal});if(!r.ok)throw new Error(await r.text());
+try{const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer ' + document.getElementById('apiKey').value},body:JSON.stringify({model:routeModel,messages:msgs,stream:true}),signal:_chatAbort.signal});if(!r.ok)throw new Error(await r.text());
 const reader=r.body.getReader();const decoder=new TextDecoder();let buf='',think='',reply='';
-while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')&&!line.includes('[DONE]')){try{const d=JSON.parse(line.slice(5));const c=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.content||'';const t=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.reasoning_content||'';if(t){think+=t;thinkDiv.textContent=think.replace(/</g,'&lt;').replace(/>/g,'&gt;');}if(c){reply+=c;replyDiv.textContent=reply.replace(/</g,'&lt;').replace(/>/g,'&gt;');}output.scrollTop=output.scrollHeight;}catch(e){}}}}
-_chatHistory.push({role:'assistant',content:reply});if(think)_chatHistory[_chatHistory.length-1].reasoning_content=think;
+while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i);buf=buf.slice(i+1);if(line.startsWith('data:')&&!line.includes('[DONE]')){try{const d=JSON.parse(line.slice(5));const c=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.content||'';const t=d.choices&&d.choices[0]&&d.choices[0].delta&&d.choices[0].delta.reasoning_content||'';if(t){think+=t;thinkDiv.textContent=think.replace(/</g,'&lt;').replace(/>/g,'&gt;');}if(c){reply+=c;replyDiv.textContent=reply.replace(/</g,'&lt;').replace(/>/g,'&gt;');}scrollChatOutput(output);}catch(e){}}}}
+history.push({role:'assistant',content:reply,...(think?{reasoning_content:think}:{})});
 }catch(e){if(e.name!=='AbortError'){replyDiv.textContent='['+ButlerI18n.translate('ERROR: ')+e.message+']';toast('Chat error: '+e.message,true);}}
-finally{sb.classList.remove('stop');sb.innerHTML='<svg viewBox="0 0 25 25"><polygon fill="#FEFEFE" points="24.5,0.5 18.12,25.5 13.34,11.66 -0.5,6.88 "/></svg>';cb.disabled=false;_isGenerating=false;}}document.getElementById('btnClear').addEventListener('click',function(){if(_isGenerating)return;_chatHistory=[];document.getElementById('chatOutput').innerHTML='';document.getElementById('chatOutput').textContent='';});
+finally{sb.classList.remove('stop');sb.innerHTML='<svg viewBox="0 0 25 25"><polygon fill="#FEFEFE" points="24.5,0.5 18.12,25.5 13.34,11.66 -0.5,6.88 "/></svg>';cb.disabled=false;_isGenerating=false;}}document.getElementById('btnClear').addEventListener('click',function(){if(_isGenerating)return;dropChatThread(document.getElementById('chatModelSelect').value);});
 document.getElementById('btnBrain').addEventListener('click',function(){_chatShowThink=!_chatShowThink;this.classList.toggle('on',_chatShowThink);document.querySelectorAll('.think-div').forEach(d=>{d.style.display=_chatShowThink?'':'none';});});
 apiKeyGenerator.addEventListener('click',async function(){const c='abcdefghijklmnopqrstuvwxyz0123456789';let k='key-';for(let i=0;i<16;i++)k+=c[Math.floor(Math.random()*c.length)];const ok=await dlgConfirm({title:'CHANGE API KEY',text:'Replace the current API key with a new random one?',ok:'GENERATE',danger:true});if(!ok||!await saveApiKey(k))return;navigator.clipboard.writeText(k).then(()=>toast('New key generated')).catch(()=>{});});
 document.getElementById('btnAddInstans').addEventListener('click',async function(){const name='inst_'+Math.random().toString(36).slice(2,8);try{const r=await apiPost('/api/instances',{name,port:0,gpu_indices:[],mode:_instTab});toast(r.message||'Created');_lastCreatedName=name;_mutate=true;await loadStatus();}catch(e){toast(e.message,true);}});

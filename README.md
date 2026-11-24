@@ -6,18 +6,20 @@ Load a model when a client asks for it, release conflicting chat models from the
 
 ![Butler](image/butler_logo.svg)
 
-**Interface screenshots (v1.0.3):**
+**Interface screenshots (v1.1.0):**
 
-![Screenshot 1](image/Butler_llama_01_1-0-3.png)
+![Butler test chat with the auto model selected](image/Butler_llama_01_1-1-0.png)
 
-![Screenshot 2](image/Butler_llama_02_1-0-3.png)
+![Expanded Qwen instance with GPU and context settings](image/Butler_llama_02_1-1-0.png)
 
-![Screenshot 3](image/Butler_llama_03_1-0-3.png)
+![Model download from Hugging Face](image/Butler_llama_03_1-1-0.png)
 
 ## Features
 
 - GGUF model instances backed by llama.cpp Docker containers; CPU or NVIDIA GPU execution.
 - Chat completions, streaming, embeddings and reranking through a shared `/v1` endpoint.
+- Virtual `auto` model and load balancing across chat replicas, with context checks for text requests.
+- Built-in test chat with a separate conversation for each model in the open tab.
 - On-demand model loading, GPU conflict handling for chat models, optional idle unloading and per-instance idle exemptions.
 - GPU memory, temperature and power monitoring; generation speed and slot indicators for chat instances.
 - Model download from Hugging Face, a file manager, runtime image selection, LoRA and MTP options.
@@ -75,6 +77,46 @@ Butler launches models inside llama.cpp Docker containers and never pulls images
 
 Restarting Butler alone does not intentionally restart model containers. Containers use `--restart no`, so after a host/WSL restart they must be loaded manually or by a request in ON mode. Butler does not restore the previous set of loaded models at boot.
 
+## Automatic routing and model replicas
+
+The virtual chat model `auto` is always listed in `/v1/models` and the built-in
+chat. It routes requests to already-running, ready chat instances with API
+sharing enabled. With no eligible instance, requests return HTTP 503.
+
+Chat instances may share a display name. Requests using that name select a ready,
+permitted copy with the fewest outstanding requests. Equal loads are rotated;
+selection and request reservation are atomic. Cold copies stay stopped while a
+ready copy exists. With no ready copy, normal Butler ON auto-start is retained
+for one copy; Butler OFF returns HTTP 503. Streaming requests retain their
+reservation until the stream ends or disconnects.
+
+`/v1/models` publishes a shared name once. A unique instance ID still addresses an
+instance directly. If an older instance's ID also equals a shared display name,
+use `instance/<id>` to select that exact copy. `auto` and the `instance/` prefix
+are reserved for routing. Previously saved instances using these names remain
+accessible through `instance/<id>`. The built-in chat keeps individual instance
+choices alongside `auto`.
+
+`auto` may select different models on consecutive requests; use a specific
+name or instance ID when the model's capabilities or context size matter.
+
+For text chat, automatic routing and shared names with replicas check the runtime's
+context limit and count input tokens using its chat template and tokenizer.
+Butler prefers models with room for the requested output as well. If the input
+exceeds every measured candidate's limit, Butler returns HTTP 400. A runtime
+whose limit or token count cannot be measured remains eligible. Media requests
+skip text sizing. A confirmed upstream context rejection before streaming can
+be retried on another ready candidate. Exact instance addresses send the
+request directly to the selected instance.
+
+### Built-in chat history
+
+Each model instance keeps its own conversation in the open browser tab.
+Switching back to a running instance restores its messages and conversation
+context. Unloading or replacing its container clears that conversation.
+The virtual model `auto` keeps a separate conversation for the tab.
+The clear button applies to the selected conversation.
+
 ## API
 
 Use an instance's **name or ID** as `model`. Read your API key from local configuration and configure it in your client; do not paste it into issues or commit it.
@@ -83,12 +125,12 @@ Use an instance's **name or ID** as `model`. Read your API key from local config
 | --- | --- | --- |
 | `POST /api/login` | UI credentials | Obtain access and refresh tokens |
 | `GET /api/models` | UI Bearer token | List available GGUF files |
-| `GET /v1/models` | API Bearer key, when configured | Discover permitted chat models |
+| `GET /v1/models` | API Bearer key, when configured | Discover permitted chat models and `auto` |
 | `POST /v1/chat/completions` | API Bearer key, when configured | Chat and streamed chat |
 | `POST /v1/embeddings` | API Bearer key, when configured | Embedding requests |
 | `POST /v1/rerank` | API Bearer key, when configured | Reranking requests |
 
-Embedding and reranking models are addressed by name/ID through their corresponding endpoints; `/v1/models` currently lists chat instances. The API is compatible with common OpenAI-style chat/embedding clients, not an implementation of every OpenAI endpoint.
+Embedding and reranking models are addressed by name/ID through their corresponding endpoints; `/v1/models` currently lists chat instances and `auto`. The API is compatible with common OpenAI-style chat/embedding clients, not an implementation of every OpenAI endpoint.
 
 ## Optional Linux service
 
@@ -121,9 +163,15 @@ Created by **Inkutay / 2026**. Inference is provided by [llama.cpp](https://gith
 
 Butler управляет локальными моделями llama.cpp через Docker. Интерфейс поддерживает RU / EN / 中文. Для первого запуска выполните команды Quick start: скрипт `scripts/setup.py` запросит пароль, создаст ключи и подготовит `static/`. Режим ON загружает модель по запросу, OFF использует только уже загруженные модели.
 
+- Виртуальная модель `auto` всегда есть в списке. Она выбирает готовую модель с разрешённым API-доступом, учитывая контекст текстового запроса и нагрузку. Копии с одинаковым именем делят запросы, а `instance/<id>` адресует конкретный инстанс.
+- Встроенный чат сохраняет отдельную историю для каждого инстанса и `auto` в открытой вкладке. Выгрузка или перезапуск контейнера очищает историю этого инстанса.
+
 ## 简体中文
 
 Butler 通过 Docker 管理本地 llama.cpp 模型，界面支持俄语、英语和简体中文。首次运行请执行 Quick start 中的命令：`scripts/setup.py` 会提示设置密码、生成密钥并准备 `static/`。ON 模式按请求加载模型，OFF 模式仅使用已运行的模型。
+
+- 虚拟模型 `auto` 始终显示在模型列表中。它会根据文本请求的上下文长度和负载，从已就绪且允许通过 API 使用的聊天实例中选择。名称相同的副本分担请求，也可通过 `instance/<id>` 指定实例。
+- 内置聊天在当前浏览器标签页中为每个实例和 `auto` 分别保留对话记录。卸载或重启容器会清除该实例的记录。
 
 ## License
 

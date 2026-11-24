@@ -22,7 +22,7 @@ if os.name == "nt":
             super().__init__(*a, **kw)
     subprocess.Popen = _NoWinPopen
 
-BUTLER_VERSION = "1.0.3"
+BUTLER_VERSION = "1.1.0"
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8090"))
 STATIC_DIR = Path(__file__).parent / "static"
@@ -362,14 +362,14 @@ def _speed_sampler():
 # Active instances from Docker
 def get_active_containers(*, strict=False):
     try:
-        r = subprocess.run(["docker", "ps", "--filter", "name=llama-inst-", "--format", "{{.Names}}"], capture_output=True, timeout=10, text=True)
+        r = subprocess.run(["docker", "ps", "--filter", "name=llama-inst-", "--format", "{{.Names}} {{.ID}}"], capture_output=True, timeout=10, text=True)
         if strict:
             r.check_returncode()
         active = {}
         for line in r.stdout.strip().split("\n"):
             if not line.strip(): continue
-            name = line.strip().removeprefix("llama-inst-")
-            active[name] = {"state": "ON"}
+            name, _, container_id = line.strip().partition(" ")
+            active[name.removeprefix("llama-inst-")] = {"state": "ON", "container_id": container_id}
         return active
     except Exception:
         if strict:
@@ -1099,6 +1099,8 @@ async def api_create(request: Request):
     name = body.get("name", "").strip()
     if not name:
         raise InputError("name: must not be empty")
+    if name == "auto" or name.startswith("instance/"):
+        raise InputError("name: reserved routing name")
     if "id" in body:
         iid = _instance_id(body["id"])
     elif re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
@@ -1112,8 +1114,12 @@ async def api_create(request: Request):
         raise InputError("mode: expected chat, embed or rerank")
     with _instances_lock:
         insts = load_instances()
+        if iid == "auto" or iid.startswith("instance/"):
+            raise InputError("id: reserved routing name")
         if any(x["id"] == iid for x in insts):
-            raise InputError("id: already exists")
+            if "id" in body:
+                raise InputError("id: already exists")
+            iid = "inst_" + secrets.token_hex(12)
         port = _unique_port(port, insts)
         new_inst = {"id": iid, "name": name, "port": port, "model": "", "mode": mode,
                     "gpu_indices": gpu_idx, "ctx": 16384, "ngl": 99, "flash": True, "ram": False, "kvq": "fp16", "parallel": 1,
@@ -1172,6 +1178,8 @@ async def api_rename(inst_id: str, request: Request):
     body = await _read_json_object(request)
     if "name" in body and not body["name"].strip():
         raise InputError("name: must not be empty")
+    if body.get("name") == "auto" or body.get("name", "").startswith("instance/"):
+        raise InputError("name: reserved routing name")
     async with _model_start_lock if "port" in body else nullcontext():
         with _instances_lock:
             insts = load_instances()
@@ -2724,42 +2732,55 @@ async def v1_chat(request: Request):
     body = await _read_json_object(request)
     if not await _v1_auth_ok(request):
         return JSONResponse({"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}}, status_code=401)
-    inst, err = await _v1_route_by_mode(body.get("model", ""), "chat")
-    if err:
-        return err
-    url = f"http://127.0.0.1:{inst['port']}/v1/chat/completions"
-    hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
-    if body.get("stream", False):
-        return await _chat_stream_response(url, body, hdrs, inst["id"])
-    try:
-        return await _proxy_model_json(url, body, hdrs)
-    finally:
-        inflight_bump(inst["id"], -1)
+    model = body.get("model", "")
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+    attempted = set()
+    last_overflow = None
+    while True:
+        inst, error = await _v1_route_by_mode(model, "chat", body, attempted)
+        if error is not None:
+            return last_overflow if last_overflow is not None else error
+        iid = inst["id"]
+        url = f"http://127.0.0.1:{inst['port']}/v1/chat/completions"
+        if body.get("stream", False):
+            response = await _chat_stream_response(url, body, headers, iid)
+        else:
+            try:
+                response = await _proxy_model_json(url, body, headers)
+            finally:
+                inflight_bump(iid, -1)
+        if model.startswith("instance/") or not _is_context_overflow(response):
+            return response
+        attempted.add(iid)
+        last_overflow = response
+
 
 @app.get("/v1/models")
 async def v1_models(request: Request):
     if not await _v1_auth_ok(request):
         return JSONResponse({"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}}, status_code=401)
     instances = load_instances()
-    active = get_active_containers()
-    chat_instances = [inst for inst in instances if inst.get("mode", "chat") == "chat"]
-    name_counts = {}
-    instance_ids = {inst["id"] for inst in chat_instances}
-    for inst in chat_instances:
-        name = inst.get("name") or inst["id"]
-        name_counts[name] = name_counts.get(name, 0) + 1
+    active = await asyncio.to_thread(get_active_containers)
+    chat = [i for i in instances if i.get("mode", "chat") == "chat"]
     data = []
-    for inst in instances:
-        if not inst.get("model") or inst.get("mode", "chat") != "chat":
+    seen = set()
+    for inst in chat:
+        if not inst.get("model") or not inst.get("allowed", True):
             continue
-        if not inst.get("allowed", True):
-            continue  # no permission mark — never passed to clients (regardless of Butler mode)
-        if butler_state.get("mode") == "ON" or inst["id"] in active:
-            name = inst.get("name") or inst["id"]
-            if name_counts[name] > 1 or (name in instance_ids and name != inst["id"]):
-                name = inst["id"]
+        if butler_state.get("mode") != "ON" and inst["id"] not in active:
+            continue
+        name = inst.get("name") or inst["id"]
+        # Keep names colliding with another instance ID addressable explicitly.
+        collision = any(i["id"] == name and (i.get("name") or i["id"]) != name
+                        for i in chat)
+        if name == "auto" or name.startswith("instance/") or collision:
+            name = "instance/" + inst["id"]
+        if name not in seen:
             data.append({"id": name, "object": "model"})
+            seen.add(name)
+    data.append({"id": "auto", "object": "model"})
     return JSONResponse({"object": "list", "data": data})
+
 
 
 
@@ -2877,29 +2898,166 @@ async def _proxy_model_json(url, body, headers):
         return JSONResponse({"error": "Invalid JSON response from model"}, status_code=502)
 
 
-async def _v1_route_by_mode(model_name, mode):
-    """Return an instance with one inflight reservation; caller releases it in finally."""
-    instances = load_instances()
-    active = get_active_containers()
-    candidates = [i for i in instances if i.get("mode", "chat") == mode]
-    inst = next((i for i in candidates if i["id"] == model_name), None)
-    if inst is None:
-        matches = [i for i in candidates if i.get("name") == model_name]
-        if len(matches) > 1:
-            return None, JSONResponse({"error": "Ambiguous model name; use the instance ID"}, status_code=409)
-        inst = matches[0] if matches else None
-    if inst is not None and not inst.get("allowed", True):
-        return None, JSONResponse({"error": f"{mode} model not allowed (no permission mark)"}, status_code=403)
-    if inst is None:
-        return None, JSONResponse({"error": f"{mode} model not found"}, status_code=404)
-    is_active = inst["id"] in active
-    if not is_active and butler_state.get("mode") != "ON":
-        return None, JSONResponse({"error": f"{mode} model not active"}, status_code=503)
+def _is_context_overflow(response):
+    # Streaming responses are returned as soon as the upstream accepts them.
+    # Only retry a structured rejection before starting a response to the client.
+    if response.status_code != 400:
+        return False
+    try:
+        error = json.loads(response.body).get("error")
+    except (ValueError, AttributeError):
+        return False
+    if isinstance(error, dict):
+        if error.get("type") == "exceed_context_size_error":
+            return True
+        error = error.get("message")
+    return isinstance(error, str) and "exceeds the available context size" in error.lower()
+
+
+async def _chat_context_fit(inst, body, reply_tokens):
+    """Return 2 for full fit, 1 for input fit, 0 if unknown, -1 if input is too large."""
+    base = f"http://127.0.0.1:{inst['port']}"
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=2.0, headers=headers) as client:
+            props = (await client.get(base + "/props")).raise_for_status().json()
+            limit = props["default_generation_settings"]["n_ctx"]
+            template = (await client.post(base + "/apply-template", json=body)).raise_for_status().json()
+            prompt = template["prompt"]
+            if type(limit) is not int or limit <= 0 or not isinstance(prompt, str):
+                return 0
+            tokenized = (await client.post(base + "/tokenize", json={
+                "content": prompt, "add_special": True, "parse_special": True,
+            })).raise_for_status().json()
+            tokens = tokenized["tokens"]
+            if not isinstance(tokens, list) or not tokens:
+                return 0
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return 0
+
+    input_tokens = len(tokens)
+    if input_tokens >= limit:
+        return -1
+    return 2 if input_tokens + reply_tokens <= limit else 1
+
+
+async def _context_candidates(candidates, body):
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return candidates
+    # Tokenizing a text prompt does not account for media tokens.
+    for message in messages:
+        if not isinstance(message, dict):
+            return candidates
+        content = message.get("content")
+        if content is None or isinstance(content, str):
+            continue
+        if not isinstance(content, list) or any(
+                not isinstance(part, dict) or part.get("type") != "text" for part in content):
+            return candidates
+    reply_tokens = body.get("max_completion_tokens", body.get("max_tokens"))
+    if type(reply_tokens) is not int or reply_tokens < 0:
+        reply_tokens = 0
+    fits = await asyncio.gather(*(_chat_context_fit(i, body, reply_tokens) for i in candidates))
+    best = max(fits)
+    return [inst for inst, fit in zip(candidates, fits) if fit == best and fit >= 0]
+
+
+def _is_route_ready(inst, active):
     iid = inst["id"]
-    inflight_bump(iid, 1)
+    return iid in active and bool(_bg_cache.get("ready", {}).get(iid)) and iid not in _stopping
+
+
+def _ready_chat_candidates(instances, active):
+    return [i for i in instances if i.get("mode", "chat") == "chat"
+            and i.get("model") and i.get("allowed", True) and _is_route_ready(i, active)]
+
+
+_route_order = {}
+
+
+def _reserve_route(candidates):
+    """Choose and reserve together, including queued requests in the load."""
+    with _inflight_lock:
+        def load(inst):
+            iid = inst["id"]
+            slots = _bg_cache.get("slots", {}).get(iid) or {}
+            return (max(_inflight.get(iid, 0), slots.get("active", 0)),
+                    _route_order.get(iid, 0))
+        inst = min(candidates, key=load)
+        iid = inst["id"]
+        _inflight[iid] = _inflight.get(iid, 0) + 1
+        _route_order[iid] = max(_route_order.values(), default=0) + 1
+        return inst
+
+
+async def _v1_route_by_mode(model_name, mode, chat_body=None, excluded=()):
+    """Return an instance with one inflight reservation; caller releases it."""
+    instances = [i for i in load_instances() if i.get("mode", "chat") == mode]
+    active = await asyncio.to_thread(get_active_containers)
+    def available(inst):
+        return _is_route_ready(inst, active)
+
+    is_auto = mode == "chat" and model_name == "auto"
+    ready_group = is_auto
+    if is_auto:
+        matches = _ready_chat_candidates(instances, active)
+        if not matches:
+            return None, JSONResponse({"error": "No ready chat models for auto"}, status_code=503)
+    else:
+        explicit = model_name.startswith("instance/")
+        token = model_name[len("instance/"):] if explicit else model_name
+        exact = next((i for i in instances if i["id"] == token), None)
+        named = [i for i in instances if (i.get("name") or i["id"]) == token]
+        # An ID belonging to a different display name retains exact-ID priority.
+        if explicit or (exact is not None and (exact.get("name") or exact["id"]) != token):
+            matches = [exact] if exact is not None else []
+        else:
+            matches = named or ([exact] if exact is not None else [])
+        if not matches:
+            return None, JSONResponse({"error": f"{mode} model not found"}, status_code=404)
+        routed_group = mode == "chat" and not explicit and len(matches) > 1
+        if excluded and not routed_group:
+            return None, JSONResponse({"error": "No other ready chat model"}, status_code=503)
+        if mode != "chat" and len(matches) > 1:
+            return None, JSONResponse({"error": "Ambiguous model name; use the instance ID"}, status_code=409)
+        allowed = [i for i in matches if i.get("allowed", True)]
+        if not allowed:
+            return None, JSONResponse({"error": f"{mode} model not allowed (no permission mark)"}, status_code=403)
+        ready_matches = [i for i in allowed if available(i)]
+        if ready_matches:
+            matches = ready_matches
+            ready_group = routed_group
+        else:
+            if excluded or butler_state.get("mode") != "ON":
+                return None, JSONResponse({"error": f"{mode} model not active"}, status_code=503)
+            # Wait for an already starting copy before considering a stopped one.
+            matches = [i for i in allowed if i.get("model") and i["id"] not in _stopping]
+            running = [i for i in matches if i["id"] in active]
+            matches = running or matches[:1]
+            if not matches:
+                return None, JSONResponse({"error": f"{mode} model unavailable"}, status_code=503)
+
+    if ready_group:
+        matches = [inst for inst in matches if inst["id"] not in excluded]
+        if not matches:
+            return None, JSONResponse({"error": "No other ready chat model"}, status_code=503)
+        if chat_body is not None:
+            matches = await _context_candidates(matches, chat_body)
+            if not matches:
+                return None, JSONResponse({"error": "Request exceeds the available context size of the ready models"}, status_code=400)
+            matches = [inst for inst in matches if available(inst)]
+            if not matches:
+                return None, JSONResponse({"error": "No ready chat models"}, status_code=503)
+
+    inst = _reserve_route(matches)
+    iid = inst["id"]
     try:
         mark_active(iid)
-        if not is_active and not await butler_start_instance(inst):
+        if ready_group and not available(inst):
+            inflight_bump(iid, -1)
+            return None, JSONResponse({"error": "Selected model is stopping"}, status_code=503)
+        if not available(inst) and not await butler_start_instance(inst):
             inflight_bump(iid, -1)
             return None, JSONResponse({"error": "Failed to start instance"}, status_code=503)
         return inst, None
